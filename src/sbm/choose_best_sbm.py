@@ -15,23 +15,29 @@ def parse_args():
         "--com_files", nargs="+", required=True, help="List of com.csv files"
     )
     parser.add_argument(
+        "--model_names",
+        nargs="+",
+        required=True,
+        help="List of model names corresponding to the files",
+    )
+    parser.add_argument(
         "--out_dir", default=".", help="Output directory (default: current directory)"
     )
     args = parser.parse_args()
     return args
 
 
-def choose_best_sbm(entropy_files, com_files, out_dir):
+def choose_best_sbm(entropy_files, com_files, model_names, out_dir):
     """Choose the best SBM model based on entropy and output the result."""
-    if len(entropy_files) != len(com_files):
+    if not (len(entropy_files) == len(com_files) == len(model_names)):
         print(
-            "Error: The number of entropy files and com files must be the same.",
+            "Error: The number of entropy files, com files, and model names must be identical.",
             file=sys.stderr,
         )
         sys.exit(1)
 
     data = []
-    for e_file, c_file in zip(entropy_files, com_files):
+    for e_file, c_file, m_name in zip(entropy_files, com_files, model_names):
         e_path = Path(e_file)
         c_path = Path(c_file)
 
@@ -43,11 +49,13 @@ def choose_best_sbm(entropy_files, com_files, out_dir):
             )
             sys.exit(1)
 
-        entropy = float(e_path.read_text().strip())
+        try:
+            entropy = float(e_path.read_text().strip())
+        except ValueError:
+            print(f"Error: Could not read a valid float from {e_path}", file=sys.stderr)
+            sys.exit(1)
 
-        # Infer the model name from the directory structure (e.g., extracting 'sbm-flat-dc')
-        model_name = c_path.parent.parent.name
-        data.append({"model": model_name, "entropy": entropy, "com_file": c_file})
+        data.append({"model": m_name, "entropy": entropy, "com_file": c_file})
 
     df = pd.DataFrame(data)
 
@@ -79,7 +87,7 @@ def choose_best_sbm(entropy_files, com_files, out_dir):
 
 def main():
     args = parse_args()
-    choose_best_sbm(args.entropy_files, args.com_files, args.out_dir)
+    choose_best_sbm(args.entropy_files, args.com_files, args.model_names, args.out_dir)
 
 
 if __name__ == "__main__":

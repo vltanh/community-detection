@@ -263,9 +263,9 @@ if [ "${is_real}" -eq 1 ]; then
     if [ -z "${network_id}" ]; then log "Error: --network required for --real."; exit 1; fi
     custom_input="data/empirical_networks/netzschleuder/${network_id}/${network_id}.csv"
     custom_out_dir="data/reference_clusterings"
-    generator=""       # Cleared to prevent appending to OUT_ROOT
-    gt_clustering=""   # Cleared to prevent appending to OUT_ROOT
-    run_id=""          # Cleared to prevent appending to SUB_PATH
+    generator=""
+    gt_clustering=""
+    run_id=""
     dataset_type="real"
 fi
 
@@ -297,7 +297,14 @@ if [ -n "${custom_input}" ]; then
     # Dynamically build SUB_PATH.
     opt_subpath="${network_id:+/${network_id}}${run_id:+/${run_id}}"
     
-    dataset_type="${dataset_type:-[Custom]}"
+    # Dynamically build dataset_type for logging if not set by a macro
+    if [ -z "${dataset_type}" ]; then
+        dataset_type="[Custom]"
+        [ -n "${network_id}" ] && dataset_type="${dataset_type} ${network_id}"
+        [ -n "${generator}" ] && dataset_type="${dataset_type} (Gen: ${generator})"
+        [ -n "${gt_clustering}" ] && dataset_type="${dataset_type} (GT: ${gt_clustering})"
+        [ -n "${run_id}" ] && dataset_type="${dataset_type} (Run: ${run_id})"
+    fi
     
     if [ -n "${custom_gt}" ]; then
         gt_file="${custom_gt}"

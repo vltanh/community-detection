@@ -5,10 +5,35 @@ TIMEOUT="3d"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 
 # ==========================================
-# Helper Functions
+# Helper Functions: Logging & State Tracking
 # ==========================================
 log() {
     builtin echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*"
+}
+
+is_step_done() {
+    local done_file="$1"
+    if [ ! -f "${done_file}" ]; then return 1; fi
+    if ! sha256sum --status -c "${done_file}" 2>/dev/null; then
+        log "State change detected. Recomputing..."
+        return 1
+    fi
+    return 0
+}
+
+mark_done() {
+    local done_file="$1"
+    local stage_name="$2"
+    read -r -a inputs <<< "$3"
+    local out_dir="$4"
+    
+    local tmp_done="${done_file}.tmp.$$"
+    
+    sha256sum "${inputs[@]}" > "${tmp_done}"
+    find "${out_dir}" -maxdepth 1 -type f ! -name "$(basename "${done_file}")" ! -name "$(basename "${tmp_done}")" -exec sha256sum {} + >> "${tmp_done}"
+    
+    mv "${tmp_done}" "${done_file}"
+    log "Success [${stage_name}]: I/O hashes recorded atomically."
 }
 
 # ==========================================
@@ -88,33 +113,21 @@ IS_RUN_CM=$run_cm_flag
 
 case ${algo} in
     ikc*)
-        if [ "$IS_RUN_CC" -eq 1 ]; then
-            log "Warning: CC is not necessary for IKC. Disabling."
-        fi
-        if [ "$IS_RUN_WCC" -eq 1 ] || [ "$IS_RUN_CM" -eq 1 ]; then
-            log "Warning: WCC, and CM are not supported for IKC. Disabling."
-        fi
+        if [ "$IS_RUN_CC" -eq 1 ]; then log "Warning: CC is not necessary for IKC. Disabling."; fi
+        if [ "$IS_RUN_WCC" -eq 1 ] || [ "$IS_RUN_CM" -eq 1 ]; then log "Warning: WCC, and CM are not supported for IKC. Disabling."; fi
         IS_RUN_CC=0; IS_RUN_WCC=0; IS_RUN_CM=0
         ;;
     leiden*)
-        if [ "$IS_RUN_CC" -eq 1 ]; then
-            log "Warning: CC is not necessary for Leiden. Disabling."
-        fi
-        if [ "$IS_RUN_WCC" -eq 1 ]; then
-            log "Warning: WCC is not supported for Leiden. Disabling."
-        fi
+        if [ "$IS_RUN_CC" -eq 1 ]; then log "Warning: CC is not necessary for Leiden. Disabling."; fi
+        if [ "$IS_RUN_WCC" -eq 1 ]; then log "Warning: WCC is not supported for Leiden. Disabling."; fi
         IS_RUN_CC=0; IS_RUN_WCC=0
         ;;
     sbm*)
-        if [ "$IS_RUN_CM" -eq 1 ]; then
-            log "Warning: CM is not supported for SBM. Disabling."
-        fi
+        if [ "$IS_RUN_CM" -eq 1 ]; then log "Warning: CM is not supported for SBM. Disabling."; fi
         IS_RUN_CM=0
         ;;
     infomap)
-        if [ "$IS_RUN_WCC" -eq 1 ] || [ "$IS_RUN_CM" -eq 1 ]; then
-            log "Warning: WCC and CM are not supported for Infomap. Disabling."
-        fi
+        if [ "$IS_RUN_WCC" -eq 1 ] || [ "$IS_RUN_CM" -eq 1 ]; then log "Warning: WCC and CM are not supported for Infomap. Disabling."; fi
         IS_RUN_WCC=0; IS_RUN_CM=0
         ;;
 esac
@@ -124,10 +137,9 @@ esac
 # ==========================================
 has_gt=0
 
-# Macro: Real Networks
 if [ "${is_real}" -eq 1 ]; then
     if [ -z "${network_id}" ]; then log "Error: --network required for --real."; exit 1; fi
-    custom_input="data/empirical_networks/netzschleuder/${network_id}/${network_id}.csv"
+    custom_input="data/empirical_networks/networks/${network_id}/${network_id}.csv"
     custom_out_dir="data/reference_clusterings"
     generator=""
     gt_clustering=""
@@ -135,7 +147,6 @@ if [ "${is_real}" -eq 1 ]; then
     dataset_type="real"
 fi
 
-# Macro: Synthetic Networks
 if [ "${is_synthetic}" -eq 1 ]; then
     if [ -z "${network_id}" ] || [ -z "${generator}" ] || [ -z "${gt_clustering}" ]; then
         log "Error: --network, --generator, and --gt-clustering-id required for --synthetic."
@@ -148,22 +159,11 @@ if [ "${is_synthetic}" -eq 1 ]; then
     dataset_type="${generator}/${gt_clustering} (run: ${run_id})"
 fi
 
-# Unified Execution Engine
 if [ -n "${custom_input}" ]; then
-    if [ -z "${custom_out_dir}" ]; then
-        log "Error: --output-dir must be provided."
-        exit 1
-    fi
-    
+    if [ -z "${custom_out_dir}" ]; then log "Error: --output-dir must be provided."; exit 1; fi
     inp_edge="${custom_input}"
-    
-    # Dynamically build OUT_ROOT. Handles custom flags AND seamlessly reconstructs the macro paths.
     COMMDET_BASE="${custom_out_dir}${generator:+/${generator}}${gt_clustering:+/${gt_clustering}}"
-    
-    # Dynamically build SUB_PATH.
     opt_subpath="${network_id:+/${network_id}}${run_id:+/${run_id}}"
-    
-    # Dynamically build dataset_type for logging if not set by a macro
     if [ -z "${dataset_type}" ]; then
         dataset_type="[Custom]"
         [ -n "${network_id}" ] && dataset_type="${dataset_type} ${network_id}"
@@ -171,24 +171,47 @@ if [ -n "${custom_input}" ]; then
         [ -n "${gt_clustering}" ] && dataset_type="${dataset_type} (GT: ${gt_clustering})"
         [ -n "${run_id}" ] && dataset_type="${dataset_type} (Run: ${run_id})"
     fi
-    
-    if [ -n "${custom_gt}" ]; then
-        gt_file="${custom_gt}"
-        has_gt=1
-    fi
+    if [ -n "${custom_gt}" ]; then gt_file="${custom_gt}"; has_gt=1; fi
 else
     log "Error: You must specify --real, --synthetic, or provide --input-edgelist and --output-dir."
     exit 1
 fi
 
-if [ ! -f "${inp_edge}" ]; then
-    log "Input file ${inp_edge} does not exist. Skipping."
-    exit 1
-fi
+if [ ! -f "${inp_edge}" ]; then log "Input file ${inp_edge} does not exist. Skipping."; exit 1; fi
 
 base_root_clusterings="${COMMDET_BASE}/clusterings"
 base_root_stats="${COMMDET_BASE}/stats"
 base_root_acc="${COMMDET_BASE}/acc"
+
+# ==========================================
+# Dependency Trigger 
+# ==========================================
+run_dependency() {
+    local target_algo="$1"
+    log "--> Triggering dependency evaluation for: ${target_algo}"
+    
+    local cmd=("bash" "${BASH_SOURCE[0]}" "--algo" "${target_algo}")
+    
+    [[ ${is_real} -eq 1 ]] && cmd+=("--real")
+    [[ ${is_synthetic} -eq 1 ]] && cmd+=("--synthetic")
+    [[ -n "${network_id}" ]] && cmd+=("--network" "${network_id}")
+    [[ -n "${generator}" ]] && cmd+=("--generator" "${generator}")
+    [[ -n "${gt_clustering}" ]] && cmd+=("--gt-clustering-id" "${gt_clustering}")
+    [[ -n "${run_id}" ]] && cmd+=("--run-id" "${run_id}")
+    [[ -n "${criterion}" ]] && cmd+=("--criterion" "${criterion}")
+    [[ -n "${custom_input}" ]] && cmd+=("--input-edgelist" "${custom_input}")
+    [[ -n "${custom_out_dir}" ]] && cmd+=("--output-dir" "${custom_out_dir}")
+    [[ -n "${custom_gt}" ]] && cmd+=("--input-gt-clustering" "${custom_gt}")
+    
+    # Cascade the evaluation flags so the winning symlink naturally references valid stats/acc directories
+    [[ ${run_stats_flag} -eq 1 ]] && cmd+=("--run-stats")
+    [[ ${run_acc_flag} -eq 1 ]] && cmd+=("--run-acc")
+    [[ ${run_cc_flag} -eq 1 ]] && cmd+=("--run-cc")
+    [[ ${run_wcc_flag} -eq 1 ]] && cmd+=("--run-wcc")
+    [[ ${run_cm_flag} -eq 1 ]] && cmd+=("--run-cm")
+    
+    "${cmd[@]}" || { log "CRITICAL: Dependency ${target_algo} failed."; exit 1; }
+}
 
 # ==========================================
 # Functions: Stats and Accuracy
@@ -196,14 +219,16 @@ base_root_acc="${COMMDET_BASE}/acc"
 run_stats() {
     if [ "${run_stats_flag}" -eq 0 ]; then return; fi
     local edge_file=$1; local com_file=$2; local stats_dir=$3
-    log "Computing stats..."
-    if [ ! -f "${stats_dir}/done" ]; then
+    log "Evaluating stats state..."
+    if ! is_step_done "${stats_dir}/done"; then
+        log "Computing stats..."
         mkdir -p "${stats_dir}"
-        { /usr/bin/time -v python network_evaluation/network_stats/compute_cluster_stats.py \
+        { /usr/bin/time -v python "${SCRIPT_DIR}/network_evaluation/network_stats/compute_cluster_stats.py" \
             --network "${edge_file}" \
             --community "${com_file}" \
             --outdir "${stats_dir}"; } 2> "${stats_dir}/error.log"
-    else log "Stats already done."; fi
+        mark_done "${stats_dir}/done" "Stats" "${edge_file} ${com_file}" "${stats_dir}"
+    else log "Stats already up-to-date."; fi
 }
 
 run_accuracy() {
@@ -213,15 +238,17 @@ run_accuracy() {
         return
     fi
     local edge_file=$1; local gt_f=$2; local est_file=$3; local acc_d=$4
-    log "Computing accuracy..."
-    if [ ! -f "${acc_d}/done" ]; then
+    log "Evaluating accuracy state..."
+    if ! is_step_done "${acc_d}/done"; then
+        log "Computing accuracy..."
         mkdir -p "${acc_d}"
-        { /usr/bin/time -v python network_evaluation/commdet_acc/compute_cd_accuracy.py \
+        { /usr/bin/time -v python "${SCRIPT_DIR}/network_evaluation/commdet_acc/compute_cd_accuracy.py" \
             --input-network "${edge_file}" \
             --gt-clustering "${gt_f}" \
             --est-clustering "${est_file}" \
             --output-prefix "${acc_d}/result"; } 2> "${acc_d}/error.log"
-    else log "Accuracy already done."; fi
+        mark_done "${acc_d}/done" "Accuracy" "${edge_file} ${gt_f} ${est_file}" "${acc_d}"
+    else log "Accuracy already up-to-date."; fi
 }
 
 log "============================"
@@ -242,6 +269,21 @@ elif [[ ${algo} == sbm* ]]; then
 fi
 
 # ==========================================
+# Resolve Meta-Model Dependencies
+# ==========================================
+if [[ ${algo} == "sbm-flat-best" ]]; then
+    log "Resolving downstream states for flat-best dependencies..."
+    for dep in sbm-flat-dc sbm-flat-ndc sbm-flat-pp; do
+        run_dependency "${dep}"
+    done
+elif [[ ${algo} == "sbm-nested-best" ]]; then
+    log "Resolving downstream states for nested-best dependencies..."
+    for dep in sbm-nested-dc sbm-nested-ndc; do
+        run_dependency "${dep}"
+    done
+fi
+
+# ==========================================
 # 1. Run Base Clustering
 # ==========================================
 suffix="${algo}"
@@ -252,8 +294,9 @@ acc_dir="${base_root_acc}/${suffix}${opt_subpath}"
 base_com="${out_dir}/com.csv"
 base_done="${out_dir}/done"
 
-log "Running clustering..."
-if [ ! -f "${base_done}" ]; then
+log "Evaluating base clustering state..."
+if ! is_step_done "${base_done}"; then
+    log "Running clustering..."
     if [[ ${algo} == leiden* ]]; then
         if [[ ${leiden_model} == cpm ]]; then
             mkdir -p "${out_dir}"
@@ -282,7 +325,7 @@ if [ ! -f "${base_done}" ]; then
             { timeout "${TIMEOUT}" /usr/bin/time -v python "${SCRIPT_DIR}/src/sbm/run_sbm.py" \
                 --edgelist "${inp_edge}" --output-directory "${out_dir}" --method "${sbm_model}"; } 2> "${out_dir}/error.log"
         elif [[ ${sbm_model} == "flat-best" ]]; then
-            log "Running flat-best..."
+            log "Selecting best flat-sbm..."
             sbm_flat_dc_root="${base_root_clusterings}/sbm-flat-dc${opt_subpath}"
             sbm_flat_ndc_root="${base_root_clusterings}/sbm-flat-ndc${opt_subpath}"
             sbm_flat_pp_root="${base_root_clusterings}/sbm-flat-pp${opt_subpath}"
@@ -296,7 +339,7 @@ if [ ! -f "${base_done}" ]; then
             
             [ -f "${out_dir}/best_model.txt" ] && log "Best SBM selected: $(cat "${out_dir}/best_model.txt")" || log "Error: best_model.txt missing."
         elif [[ ${sbm_model} == "nested-best" ]]; then
-            log "Running nested-best..."
+            log "Selecting best nested-sbm..."
             sbm_nested_dc_root="${base_root_clusterings}/sbm-nested-dc${opt_subpath}"
             sbm_nested_ndc_root="${base_root_clusterings}/sbm-nested-ndc${opt_subpath}"
             
@@ -315,7 +358,19 @@ if [ ! -f "${base_done}" ]; then
         log "Unknown method: ${algo}"; exit 1
     fi
 
-    [ -f "${base_com}" ] && touch "${base_done}"
+    # Determine cryptographic inputs for Base Clustering
+    base_inputs="${inp_edge}"
+    if [[ ${sbm_model} == "flat-best" ]]; then
+        base_inputs="${inp_edge} ${base_root_clusterings}/sbm-flat-dc${opt_subpath}/com.csv ${base_root_clusterings}/sbm-flat-dc${opt_subpath}/entropy.txt ${base_root_clusterings}/sbm-flat-ndc${opt_subpath}/com.csv ${base_root_clusterings}/sbm-flat-ndc${opt_subpath}/entropy.txt ${base_root_clusterings}/sbm-flat-pp${opt_subpath}/com.csv ${base_root_clusterings}/sbm-flat-pp${opt_subpath}/entropy.txt"
+    elif [[ ${sbm_model} == "nested-best" ]]; then
+        base_inputs="${inp_edge} ${base_root_clusterings}/sbm-nested-dc${opt_subpath}/com.csv ${base_root_clusterings}/sbm-nested-dc${opt_subpath}/entropy.txt ${base_root_clusterings}/sbm-nested-ndc${opt_subpath}/com.csv ${base_root_clusterings}/sbm-nested-ndc${opt_subpath}/entropy.txt"
+    fi
+
+    if [ -f "${base_com}" ] || [ -f "${out_dir}/best_model.txt" ]; then 
+        mark_done "${base_done}" "Base Clustering (${algo})" "${base_inputs}" "${out_dir}"
+    fi
+else
+    log "Base clustering already up-to-date."
 fi
 
 if [ ! -f "${base_com}" ]; then
@@ -335,7 +390,6 @@ if [[ ${sbm_model} == "flat-best" || ${sbm_model} == "nested-best" ]]; then
 
     log "Symlinking downstream folders for: ${best_algo}..."
 
-    # 1. Symlink base stats folder
     if [ "${run_stats_flag}" -eq 1 ]; then
         target_stats="${base_root_stats}/${best_algo}${opt_subpath}"
         link_stats="${base_root_stats}/${algo}${opt_subpath}"
@@ -348,7 +402,6 @@ if [[ ${sbm_model} == "flat-best" || ${sbm_model} == "nested-best" ]]; then
         fi
     fi
 
-    # 1b. Symlink base acc folder
     if [ "${run_acc_flag}" -eq 1 ] && [ "${has_gt}" -eq 1 ]; then
         target_acc="${base_root_acc}/${best_algo}${opt_subpath}"
         link_acc="${base_root_acc}/${algo}${opt_subpath}"
@@ -361,7 +414,6 @@ if [[ ${sbm_model} == "flat-best" || ${sbm_model} == "nested-best" ]]; then
         fi
     fi
 
-    # 2. Symlink post-processing & their respective stats/acc folders
     for base_pp in cc wcc cm; do
         if [ "${base_pp}" == "cc" ]; then
             if [ "${IS_RUN_CC}" -ne 1 ]; then continue; fi; pp_tag="cc"
@@ -371,7 +423,6 @@ if [[ ${sbm_model} == "flat-best" || ${sbm_model} == "nested-best" ]]; then
             if [ "${IS_RUN_CM}" -ne 1 ]; then continue; fi; pp_tag="cm${CRIT_SUFFIX}"
         fi
 
-        # Cluster symlink (always created if post-processing is run)
         target_pp_clust="${base_root_clusterings}/${best_algo}+${pp_tag}${opt_subpath}"
         link_pp_clust="${base_root_clusterings}/${algo}+${pp_tag}${opt_subpath}"
         [ -L "${link_pp_clust}" ] && rm "${link_pp_clust}"
@@ -382,7 +433,6 @@ if [[ ${sbm_model} == "flat-best" || ${sbm_model} == "nested-best" ]]; then
             log "Warning: Expected post-processing clustering ${target_pp_clust} not found. Symlink not created."
         fi
 
-        # Stats symlink
         if [ "${run_stats_flag}" -eq 1 ]; then
             target_pp_stats="${base_root_stats}/${best_algo}+${pp_tag}${opt_subpath}"
             link_pp_stats="${base_root_stats}/${algo}+${pp_tag}${opt_subpath}"
@@ -395,7 +445,6 @@ if [[ ${sbm_model} == "flat-best" || ${sbm_model} == "nested-best" ]]; then
             fi
         fi
         
-        # Acc symlink
         if [ "${run_acc_flag}" -eq 1 ] && [ "${has_gt}" -eq 1 ]; then
             target_pp_acc="${base_root_acc}/${best_algo}+${pp_tag}${opt_subpath}"
             link_pp_acc="${base_root_acc}/${algo}+${pp_tag}${opt_subpath}"
@@ -427,15 +476,18 @@ if [ "${IS_RUN_CC}" -eq 1 ]; then
     cc_com="${out_cc_dir}/com.csv"
     cc_done="${out_cc_dir}/done"
     
-    if [ ! -f "${cc_done}" ]; then
+    log "Evaluating CC state..."
+    if ! is_step_done "${cc_done}"; then
         log "Running CC..."
         mkdir -p "${out_cc_dir}"
         { timeout "${TIMEOUT}" /usr/bin/time -v "${SCRIPT_DIR}/constrained-clustering/constrained_clustering" \
             MincutOnly --edgelist "${inp_edge}" --existing-clustering "${base_com}" \
             --num-processors 1 --output-file "${cc_com}" --log-file "${out_cc_dir}/cc.log" \
             --log-level 1 --connectedness-criterion 0; } 2> "${out_cc_dir}/error.log"
-        [ -f "${cc_com}" ] && touch "${cc_done}"
-    else log "CC already done."; fi
+        if [ -f "${cc_com}" ]; then
+            mark_done "${cc_done}" "CC" "${inp_edge} ${base_com}" "${out_cc_dir}"
+        fi
+    else log "CC already up-to-date."; fi
     
     if [ -f "${cc_com}" ]; then
         run_stats "${inp_edge}" "${cc_com}" "${stats_cc_dir}"
@@ -454,15 +506,18 @@ if [ "${IS_RUN_WCC}" -eq 1 ]; then
     wcc_com="${out_wcc_dir}/com.csv"
     wcc_done="${out_wcc_dir}/done"
     
-    if [ ! -f "${wcc_done}" ]; then
+    log "Evaluating WCC state..."
+    if ! is_step_done "${wcc_done}"; then
         log "Running WCC (${WCC_CRIT})..."
         mkdir -p "${out_wcc_dir}"
         { timeout "${TIMEOUT}" /usr/bin/time -v "${SCRIPT_DIR}/constrained-clustering/constrained_clustering" \
             MincutOnly --connectedness-criterion "${WCC_CRIT}" --edgelist "${inp_edge}" \
             --existing-clustering "${base_com}" --num-processors 1 --output-file "${wcc_com}" \
             --log-file "${out_wcc_dir}/wcc.log" --log-level 1; } 2> "${out_wcc_dir}/error.log"
-        [ -f "${wcc_com}" ] && touch "${wcc_done}"
-    else log "WCC already done."; fi
+        if [ -f "${wcc_com}" ]; then
+            mark_done "${wcc_done}" "WCC" "${inp_edge} ${base_com}" "${out_wcc_dir}"
+        fi
+    else log "WCC already up-to-date."; fi
 
     if [ -f "${wcc_com}" ]; then
         run_stats "${inp_edge}" "${wcc_com}" "${stats_wcc_dir}"
@@ -481,7 +536,8 @@ if [ "${IS_RUN_CM}" -eq 1 ]; then
     cm_com="${out_cm_dir}/com.csv"
     cm_done="${out_cm_dir}/done"
     
-    if [ ! -f "${cm_done}" ]; then
+    log "Evaluating CM state..."
+    if ! is_step_done "${cm_done}"; then
         log "Running CM (${CM_CRIT})..."
         if [[ ${algo} == leiden* ]]; then
             if [[ ${leiden_model} == cpm ]]; then
@@ -502,8 +558,10 @@ if [ "${IS_RUN_CM}" -eq 1 ]; then
                     --log-level 1; } 2> "${out_cm_dir}/error.log"
             fi
         else log "CM not implemented for ${algo}"; fi
-        [ -f "${cm_com}" ] && touch "${cm_done}"
-    else log "CM already done."; fi
+        if [ -f "${cm_com}" ]; then
+            mark_done "${cm_done}" "CM" "${inp_edge} ${base_com}" "${out_cm_dir}"
+        fi
+    else log "CM already up-to-date."; fi
 
     if [ -f "${cm_com}" ]; then
         run_stats "${inp_edge}" "${cm_com}" "${stats_cm_dir}"

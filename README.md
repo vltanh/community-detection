@@ -44,13 +44,11 @@ Outputs are dynamically nested based on the pathing identifiers provided.
 * Ground truth clustering (optional): `<input-gt-clustering>`
 
 **Outputs (Dynamically Routed):**
-*(Note: `<out-root>` represents `<output-dir>[/<generator>][/<gt-clustering-id>]` and `<sub-path>` represents `[/<network>][/<run-id>]`)*
+*(Note: `<out-root>` represents `<output-dir>[/<generator>][/<gt-clustering-id>]`, `<algo-pp>` represents `<algo>[+<pp>(<criterion>)]`, and `<sub-path>` represents `[/<network>][/<run-id>]`)*
 
-* Base/Refined Clusterings: `<out-root>/clusterings/<algo>[+<pp>(<criterion>)]<sub-path>/com.csv`
-* Stats (`--run-stats`): `<out-root>/stats/<algo>[+<pp>(<criterion>)]<sub-path>/`
-* Accuracy (`--run-acc`): `<out-root>/acc/<algo>[+<pp>(<criterion>)]<sub-path>/`
-
----
+* Base/Refined Clusterings: `<out-root>/clusterings/<algo-pp><sub-path>/com.csv`
+* Stats (`--run-stats`): `<out-root>/stats/<algo-pp><sub-path>/`
+* Accuracy (`--run-acc`): `<out-root>/acc/<algo-pp><sub-path>/`
 
 ## 2. Macro Mode (Internal / Pre-configured Usage)
 
@@ -95,7 +93,7 @@ When using macros, the script strictly adheres to the following architecture bas
 **Inputs (Auto-Resolved):**
 
 * Input edgelist:
-    * Real: `data/empirical_networks/netzschleuder/<network>/<network>.csv`
+    * Real: `data/empirical_networks/networks/<network>/<network>.csv`
     * Synthetic: `data/synthetic_networks/networks/<generator>/<gt-clustering-id>/<network>/<run-id>/edge.csv`
 * Ground truth:
     * Synthetic: `data/reference_clusterings/clusterings/<gt-clustering-id>/<network>/com.csv`
@@ -106,13 +104,11 @@ Base Dir (`<out-root>`):
 * Real: `data/reference_clusterings`
 * Synthetic: `data/estimated_clusterings/<generator>/<gt-clustering-id>`
 
-Inside the respective `<out-root>`, outputs follow this structure:
+Inside the respective `<out-root>`, outputs follow this structure (with `<algo-pp>` representing `<algo>[+<pp>(<criterion>)]`):
 
-* Base/Refined Clusterings: `<out-root>/clusterings/<algo>[+<pp>(<criterion>)]/<network>[/<run-id>]/com.csv`
-* Stats (`--run-stats`): `<out-root>/stats/<algo>[+<pp>(<criterion>)]/<network>[/<run-id>]/`
-* Accuracy (`--run-acc`): `<out-root>/acc/<algo>[+<pp>(<criterion>)]/<network>[/<run-id>]/`
-
----
+* Base/Refined Clusterings: `<out-root>/clusterings/<algo-pp>/<network>[/<run-id>]/com.csv`
+* Stats (`--run-stats`): `<out-root>/stats/<algo-pp>/<network>[/<run-id>]/`
+* Accuracy (`--run-acc`): `<out-root>/acc/<algo-pp>/<network>[/<run-id>]/`
 
 ## Pipeline Execution Steps
 
@@ -153,8 +149,6 @@ Refines the base clustering via Constrained Clustering variants.
 Re-runs the Statistics (Step 3) and Accuracy (Step 4) evaluations on the newly refined clustering outputs, subject to the same `--run-stats` and `--run-acc` flags.
 
 * **Outputs:** `[OUT_ROOT]/stats/<algo>+<pp>[criterion]<SUB_PATH>/` and `[OUT_ROOT]/acc/<algo>+<pp>[criterion]<SUB_PATH>/`
-
----
 
 ## Examples
 

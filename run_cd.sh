@@ -1,5 +1,7 @@
 #!/bin/bash
 
+#!/bin/bash
+
 # ==============================================================================
 # Community Detection Evaluation Pipeline (run_cd.sh)
 # ==============================================================================
@@ -9,33 +11,35 @@
 # USAGE:
 #   Real:   ./run_cd.sh --algo <algo> --real --network <id> [OPTIONS]
 #   Synth:  ./run_cd.sh --algo <algo> --synthetic --network <id> --generator <gen> --gt-clustering-id <gt> [OPTIONS]
-#   Custom: ./run_cd.sh --algo <algo> --input-edgelist <path> --output-dir <dir> [--network <id>] [OPTIONS]
+#   Custom: ./run_cd.sh --algo <algo> --input-edgelist <path> --output-dir <dir> [--generator <gen>] [--gt-clustering-id <id>] [--network <id>] [--run-id <id>] [OPTIONS]
 #
 # OPTIONS:
 #   [General]
-#     --algo <algo>          : (Required) Algorithm to run (e.g., leiden-cpm-0.1, infomap, sbm-flat-dc).
-#     --criterion <name>     : Connectedness criterion for WCC and CM (e.g., 'sqrt' or 'log').
-#                              If provided, outputs are suffixed (e.g., +wcc(sqrt)).
+#     --algo <algo>             : (Required) Algorithm to run (e.g., leiden-cpm-0.1, infomap, sbm-flat-dc).
+#     --criterion <name>        : Connectedness criterion for WCC and CM (e.g., 'sqrt' or 'log').
+#                                 If provided, outputs are suffixed (e.g., +wcc(sqrt)).
 #
 #   [Macros: Auto-populate input/output paths]
-#     --real                    : Use standard paths for empirical networks.
-#     --synthetic               : Use standard paths for synthetic networks.
-#     --network <id>            : Network identifier (Required for macros, optional for custom paths to group outputs).
-#     --generator <gen>         : Generator used (Required for --synthetic).
-#     --gt-clustering-id <gt>   : Ground-truth identifier (Required for --synthetic).
-#     --run-id <id>             : Run identifier (Default: 0).
+#     --real                    : Use standard paths for empirical networks. Requires --network.
+#     --synthetic               : Use standard paths for synthetic networks. Requires --network, --generator, --gt-clustering-id.
+#
+#   [Pathing Variables] (Used by macros automatically, or optionally by custom mode to structure outputs)
+#     --network <id>            : Network identifier.
+#     --generator <gen>         : Generator used (e.g., ec-sbm-v2).
+#     --gt-clustering-id <gt>   : Ground-truth clustering identifier.
+#     --run-id <id>             : Run identifier (Default: 0 for --synthetic).
 #
 #   [Custom Paths] (Overrides macros if explicitly provided)
 #     --input-edgelist <p>      : Custom path to the input edge list CSV.
-#     --output-dir <dir>        : Root directory for outputs.
+#     --output-dir <dir>        : Base directory for outputs.
 #     --input-gt-clustering <p> : (Optional) Path to ground-truth CSV (triggers acc eval if --run-acc).
 #
 #   [Execution Flags] (Stats, Acc, and Post-Processing skip by default)
-#     --run-stats            : Enable network statistics computation.
-#     --run-acc              : Enable accuracy evaluation against ground truth.
-#     --run-cc               : Enable Constrained Clustering (CC) post-processing.
-#     --run-wcc              : Enable Weakly Constrained Clustering (WCC) post-processing.
-#     --run-cm               : Enable Cactus Min-cut (CM) post-processing.
+#     --run-stats               : Enable network statistics computation.
+#     --run-acc                 : Enable accuracy evaluation against ground truth.
+#     --run-cc                  : Enable Constrained Clustering (CC) post-processing.
+#     --run-wcc                 : Enable Weakly Constrained Clustering (WCC) post-processing.
+#     --run-cm                  : Enable Cactus Min-cut (CM) post-processing.
 #
 # PATH LEGEND:
 #   [INP_EDGE]
@@ -48,12 +52,11 @@
 #   [OUT_ROOT]
 #       Synth       -> data/estimated_clusterings/<generator>/<gt_clustering>
 #       Real        -> data/reference_clusterings
-#       Custom      -> <output_dir>
+#       Custom      -> <output_dir>[/<generator>][/<gt_clustering_id>]
 #   [SUB_PATH]
-#       Synth       -> <network_id>/<run_id>
-#       Real        -> <network_id>
-#       Custom      -> Maps directly to OUT_ROOT subdirectories unless --network <id> is passed, 
-#                      in which case outputs are grouped under /<network_id>
+#       Synth       -> /<network_id>/<run_id>
+#       Real        -> /<network_id>
+#       Custom      -> [/<network_id>][/<run_id>]
 #
 # ------------------------------------------------------------------------------
 # STEP 1: Base Clustering
@@ -64,7 +67,7 @@
 # [Inputs]
 #   - Network Edge List : [INP_EDGE]
 # [Outputs]
-#   - Base Clustering   : [OUT_ROOT]/clusterings/<algo>/[SUB_PATH]/com.csv
+#   - Base Clustering   : [OUT_ROOT]/clusterings/<algo>[/<network_id>][/<run_id>]/com.csv
 #
 # ------------------------------------------------------------------------------
 # STEP 2: SBM Best Model Selection (Only if algo is sbm-flat-best or sbm-nested-best)
@@ -73,10 +76,10 @@
 #   - Script: src/comm-det/sbm/choose_best_sbm.py
 #
 # [Inputs]
-#   - SBM Variant Coms  : [OUT_ROOT]/clusterings/sbm-<variant>/[SUB_PATH]/com.csv
-#   - SBM Entropies     : [OUT_ROOT]/clusterings/sbm-<variant>/[SUB_PATH]/entropy.txt
+#   - SBM Variant Coms  : [OUT_ROOT]/clusterings/sbm-<variant>[/<network_id>][/<run_id>]/com.csv
+#   - SBM Entropies     : [OUT_ROOT]/clusterings/sbm-<variant>[/<network_id>][/<run_id>]/entropy.txt
 # [Outputs]
-#   - Selection Log     : [OUT_ROOT]/clusterings/<algo>/[SUB_PATH]/best_model.txt
+#   - Selection Log     : [OUT_ROOT]/clusterings/<algo>[/<network_id>][/<run_id>]/best_model.txt
 #   - Symlinks          : Creates symlinks to the winning model's outputs.
 #
 # ------------------------------------------------------------------------------
@@ -89,7 +92,7 @@
 #   - Network Edge List : [INP_EDGE]
 #   - Base Clustering   : (Generated in Step 1)
 # [Outputs]
-#   - Stats Directory   : [OUT_ROOT]/stats/<algo>/[SUB_PATH]/
+#   - Stats Directory   : [OUT_ROOT]/stats/<algo>[/<network_id>][/<run_id>]/
 #
 # ------------------------------------------------------------------------------
 # STEP 4: Accuracy Evaluation (Requires --run-acc and a ground-truth clustering)
@@ -102,7 +105,7 @@
 #   - Base Clustering   : (Generated in Step 1)
 #   - Ground Truth Coms : [GT_COM]
 # [Outputs]
-#   - Acc Directory     : [OUT_ROOT]/acc/<algo>/[SUB_PATH]/
+#   - Acc Directory     : [OUT_ROOT]/acc/<algo>[/<network_id>][/<run_id>]/
 #
 # ------------------------------------------------------------------------------
 # STEP 5: Post-Processing (Requires --run-cc, --run-wcc, or --run-cm)
@@ -114,7 +117,7 @@
 #   - Network Edge List : [INP_EDGE]
 #   - Base Clustering   : (Generated in Step 1)
 # [Outputs]
-#   - Refined Clustering: [OUT_ROOT]/clusterings/<algo>+<pp>[criterion]/[SUB_PATH]/com.csv
+#   - Refined Clustering: [OUT_ROOT]/clusterings/<algo>+<pp>[criterion][/<network_id>][/<run_id>]/com.csv
 #
 # ------------------------------------------------------------------------------
 # STEP 6: Post-Processing Evaluation
@@ -127,8 +130,8 @@
 #   - Refined Clustering: (Generated in Step 5)
 #   - Ground Truth Coms : [GT_COM]
 # [Outputs]
-#   - Stats Directory   : [OUT_ROOT]/stats/<algo>+<pp>[criterion]/[SUB_PATH]/
-#   - Acc Directory     : [OUT_ROOT]/acc/<algo>+<pp>[criterion]/[SUB_PATH]/
+#   - Stats Directory   : [OUT_ROOT]/stats/<algo>+<pp>[criterion][/<network_id>][/<run_id>]/
+#   - Acc Directory     : [OUT_ROOT]/acc/<algo>+<pp>[criterion][/<network_id>][/<run_id>]/
 # ==============================================================================
 
 # Constants
@@ -151,7 +154,7 @@ is_real=0
 is_synthetic=0
 generator=""
 gt_clustering=""
-run_id="0"
+run_id=""
 criterion=""
 
 custom_input=""
@@ -254,15 +257,16 @@ esac
 # Input/Output Path Routing (Unified)
 # ==========================================
 has_gt=0
-out_subpath=""
 
 # Macro: Real Networks
 if [ "${is_real}" -eq 1 ]; then
     if [ -z "${network_id}" ]; then log "Error: --network required for --real."; exit 1; fi
     custom_input="data/empirical_networks/netzschleuder/${network_id}/${network_id}.csv"
     custom_out_dir="data/reference_clusterings"
+    generator=""       # Cleared to prevent appending to OUT_ROOT
+    gt_clustering=""   # Cleared to prevent appending to OUT_ROOT
+    run_id=""          # Cleared to prevent appending to SUB_PATH
     dataset_type="real"
-    out_subpath="${network_id}"
 fi
 
 # Macro: Synthetic Networks
@@ -271,11 +275,11 @@ if [ "${is_synthetic}" -eq 1 ]; then
         log "Error: --network, --generator, and --gt-clustering-id required for --synthetic."
         exit 1
     fi
+    run_id="${run_id:-0}"
     custom_input="data/synthetic_networks/networks/${generator}/${gt_clustering}/${network_id}/${run_id}/edge.csv"
-    custom_out_dir="data/estimated_clusterings/${generator}/${gt_clustering}"
+    custom_out_dir="data/estimated_clusterings"
     custom_gt="data/reference_clusterings/clusterings/${gt_clustering}/${network_id}/com.csv"
     dataset_type="${generator}/${gt_clustering} (run: ${run_id})"
-    out_subpath="${network_id}/${run_id}"
 fi
 
 # Unified Execution Engine
@@ -286,13 +290,14 @@ if [ -n "${custom_input}" ]; then
     fi
     
     inp_edge="${custom_input}"
-    COMMDET_BASE="${custom_out_dir}"
-    dataset_type="${dataset_type:-custom}"
     
-    # If network_id was provided explicitly in custom mode, use it. Otherwise, subpath remains empty.
-    if [ "${is_real}" -eq 0 ] && [ "${is_synthetic}" -eq 0 ] && [ -n "${network_id}" ]; then
-        out_subpath="${network_id}"
-    fi
+    # Dynamically build OUT_ROOT. Handles custom flags AND seamlessly reconstructs the macro paths.
+    COMMDET_BASE="${custom_out_dir}${generator:+/${generator}}${gt_clustering:+/${gt_clustering}}"
+    
+    # Dynamically build SUB_PATH.
+    opt_subpath="${network_id:+/${network_id}}${run_id:+/${run_id}}"
+    
+    dataset_type="${dataset_type:-[Custom]}"
     
     if [ -n "${custom_gt}" ]; then
         gt_file="${custom_gt}"
@@ -307,9 +312,6 @@ if [ ! -f "${inp_edge}" ]; then
     log "Input file ${inp_edge} does not exist. Skipping."
     exit 1
 fi
-
-# Calculate the dynamic path modifier once to remove repetition
-opt_subpath="${out_subpath:+/${out_subpath}}"
 
 base_root_clusterings="${COMMDET_BASE}/clusterings"
 base_root_stats="${COMMDET_BASE}/stats"

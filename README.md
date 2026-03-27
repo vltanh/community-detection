@@ -25,18 +25,16 @@ Use this mode to provide explicit file paths for your own datasets.
 | Argument | Description |
 | --- | --- |
 | `--criterion <name>` | Connectedness criterion for WCC and CM (e.g., `sqrt` or `log`). |
-| `--network <id>` | Optional identifier to group outputs in the directory structure. |
-| `--generator <gen>` | Optional identifier to group outputs in the directory structure. |
-| `--gt-clustering-id <id>` | Optional identifier to group outputs in the directory structure. |
-| `--run-id <id>` | Optional numerical run identifier. |
+| `--network <id>` | Network identifier; appended to the output sub-path as `/<network>/`. |
+| `--generator <gen>` | Generator identifier; appended to the output root as `/<generator>/`. |
+| `--gt-clustering-id <id>` | Ground-truth clustering identifier; appended to the output root as `/<gt-clustering-id>/`. |
+| `--run-id <id>` | Run identifier; appended to the output sub-path as `/<run-id>/`. |
 | `--run-stats` | Enables network statistics computation. |
 | `--input-gt-clustering <p>` | Path to ground-truth `com.csv` (triggers accuracy evaluation if `--run-acc` is enabled). |
 | `--run-acc` | Enables accuracy evaluation against ground truth. |
-| `--run-cc` / `-wcc` / `-cm` | Enables post-processing refinement algorithms. |
+| `--run-cc` / `--run-wcc` / `--run-cm` | Enables post-processing refinement algorithms. |
 
-### Intended Custom Structure
-
-Outputs are dynamically nested based on the pathing identifiers provided.
+### Directory Structure
 
 **Inputs (Manually Provided):**
 
@@ -50,7 +48,7 @@ Outputs are dynamically nested based on the pathing identifiers provided.
 * Stats (`--run-stats`): `<out-root>/stats/<algo-pp><sub-path>/`
 * Accuracy (`--run-acc`): `<out-root>/acc/<algo-pp><sub-path>/`
 
-## 2. Macro Mode (Internal / Pre-configured Usage)
+## 2. Macro Mode
 
 Use this mode to automatically map inputs and outputs to the standard `data/` directory structure for either Empirical (`--real`) or Synthetic (`--synthetic`) networks.
 
@@ -84,11 +82,9 @@ Use this mode to automatically map inputs and outputs to the standard `data/` di
 | `--run-id <id>` | Numerical run identifier (Defaults to `0` for `--synthetic`). |
 | `--run-stats` | Enables network statistics computation. |
 | `--run-acc` | Enables accuracy evaluation against ground truth. |
-| `--run-cc` / `-wcc` / `-cm` | Enables post-processing refinement algorithms. |
+| `--run-cc` / `--run-wcc` / `--run-cm` | Enables post-processing refinement algorithms. |
 
-### Intended Macro Structure
-
-When using macros, the script strictly adheres to the following architecture based on the provided IDs.
+### Directory Structure
 
 **Inputs (Auto-Resolved):**
 
@@ -112,13 +108,13 @@ Inside the respective `<out-root>`, outputs follow this structure (with `<algo-p
 
 ## Pipeline Execution Steps
 
-Regardless of the mode used, the script executes the following stages (skipping evaluation and post-processing steps unless their flags are provided):
+Regardless of the mode used, the script executes the following steps (evaluation and post-processing steps are skipped unless their flags are provided):
 
 ### Step 1: Base Clustering
 
 Computes the initial community structure using the specified algorithm (`leiden`, `infomap`, `ikc`, `sbm`, etc.).
 
-* **Outputs:** `[OUT_ROOT]/clusterings/<algo><SUB_PATH>/com.csv`
+* **Outputs:** `<out-root>/clusterings/<algo><sub-path>/com.csv`
 
 ### Step 2: SBM Best Model Selection
 
@@ -130,29 +126,29 @@ Computes the initial community structure using the specified algorithm (`leiden`
 
 Calculates network metrics for the estimated base clustering.
 
-* **Outputs:** `[OUT_ROOT]/stats/<algo><SUB_PATH>/`
+* **Outputs:** `<out-root>/stats/<algo><sub-path>/`
 
 ### Step 4: Accuracy Evaluation (`--run-acc`)
 
 Compares the estimated base clustering against the provided ground truth.
 
-* **Outputs:** `[OUT_ROOT]/acc/<algo><SUB_PATH>/`
+* **Outputs:** `<out-root>/acc/<algo><sub-path>/`
 
 ### Step 5: Post-Processing (`--run-cc`, `--run-wcc`, `--run-cm`)
 
 Refines the base clustering via Constrained Clustering variants.
 
-* **Outputs:** `[OUT_ROOT]/clusterings/<algo>+<pp>[criterion]<SUB_PATH>/com.csv`
+* **Outputs:** `<out-root>/clusterings/<algo>+<pp>[criterion]<sub-path>/com.csv`
 
 ### Step 6: Post-Processing Evaluation
 
 Re-runs the Statistics (Step 3) and Accuracy (Step 4) evaluations on the newly refined clustering outputs, subject to the same `--run-stats` and `--run-acc` flags.
 
-* **Outputs:** `[OUT_ROOT]/stats/<algo>+<pp>[criterion]<SUB_PATH>/` and `[OUT_ROOT]/acc/<algo>+<pp>[criterion]<SUB_PATH>/`
+* **Outputs:** `<out-root>/stats/<algo>+<pp>[criterion]<sub-path>/` and `<out-root>/acc/<algo>+<pp>[criterion]<sub-path>/`
 
 ## Examples
 
-In each block below, both commands execute the same clustering logic and output to the same structure, but Macro mode auto-routes while Custom mode allows precise path control.
+Each block below shows equivalent invocations for the same network and algorithm. Custom mode writes to the specified directory; macro mode writes to its pre-configured `data/` paths.
 
 ```bash
 # Custom mode

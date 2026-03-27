@@ -219,16 +219,20 @@ run_dependency() {
 run_stats() {
     if [ "${run_stats_flag}" -eq 0 ]; then return; fi
     local edge_file=$1; local com_file=$2; local stats_dir=$3
-    log "Evaluating stats state..."
-    if ! is_step_done "${stats_dir}/done"; then
-        log "Computing stats..."
-        mkdir -p "${stats_dir}"
-        { /usr/bin/time -v python "${SCRIPT_DIR}/network_evaluation/network_stats/compute_cluster_stats.py" \
-            --network "${edge_file}" \
-            --community "${com_file}" \
-            --outdir "${stats_dir}"; } 2> "${stats_dir}/error.log"
-        mark_done "${stats_dir}/done" "Stats" "${edge_file} ${com_file}" "${stats_dir}"
-    else log "Stats already up-to-date."; fi
+    
+    log "Evaluating stats state via Python StateTracker..."
+    mkdir -p "${stats_dir}"
+    
+    { /usr/bin/time -v python "${SCRIPT_DIR}/network_evaluation/network_stats/compute_cluster_stats.py" \
+        --network "${edge_file}" \
+        --community "${com_file}" \
+        --outdir "${stats_dir}"; } 2> "${stats_dir}/error.log"
+        
+    if [ ${?} -ne 0 ]; then
+        log "ERROR: Stats computation failed for ${stats_dir}."
+    else
+        log "Stats evaluation complete for ${stats_dir}."
+    fi
 }
 
 run_accuracy() {
@@ -238,17 +242,21 @@ run_accuracy() {
         return
     fi
     local edge_file=$1; local gt_f=$2; local est_file=$3; local acc_d=$4
-    log "Evaluating accuracy state..."
-    if ! is_step_done "${acc_d}/done"; then
-        log "Computing accuracy..."
-        mkdir -p "${acc_d}"
-        { /usr/bin/time -v python "${SCRIPT_DIR}/network_evaluation/commdet_acc/compute_cd_accuracy.py" \
-            --input-network "${edge_file}" \
-            --gt-clustering "${gt_f}" \
-            --est-clustering "${est_file}" \
-            --output-prefix "${acc_d}/result"; } 2> "${acc_d}/error.log"
-        mark_done "${acc_d}/done" "Accuracy" "${edge_file} ${gt_f} ${est_file}" "${acc_d}"
-    else log "Accuracy already up-to-date."; fi
+    
+    log "Evaluating accuracy state via Python StateTracker..."
+    mkdir -p "${acc_d}"
+    
+    { /usr/bin/time -v python "${SCRIPT_DIR}/network_evaluation/commdet_acc/compute_cd_accuracy.py" \
+        --input-network "${edge_file}" \
+        --gt-clustering "${gt_f}" \
+        --est-clustering "${est_file}" \
+        --output-prefix "${acc_d}/result"; } 2> "${acc_d}/error.log"
+        
+    if [ ${?} -ne 0 ]; then
+        log "ERROR: Accuracy computation failed for ${acc_d}."
+    else
+        log "Accuracy evaluation complete for ${acc_d}."
+    fi
 }
 
 log "============================"

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Constants
-TIMEOUT="3d"
+TIMEOUT="5d"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 
 # ==========================================
@@ -26,12 +26,12 @@ mark_done() {
     local stage_name="$2"
     read -r -a inputs <<< "$3"
     local out_dir="$4"
-    
+
     local tmp_done="${done_file}.tmp.$$"
-    
+
     sha256sum "${inputs[@]}" > "${tmp_done}"
     find "${out_dir}" -maxdepth 1 -type f ! -name "$(basename "${done_file}")" ! -name "$(basename "${tmp_done}")" -exec sha256sum {} + >> "${tmp_done}"
-    
+
     mv "${tmp_done}" "${done_file}"
     log "Success [${stage_name}]: I/O hashes recorded atomically."
 }
@@ -184,14 +184,14 @@ base_root_stats="${COMMDET_BASE}/stats"
 base_root_acc="${COMMDET_BASE}/acc"
 
 # ==========================================
-# Dependency Trigger 
+# Dependency Trigger
 # ==========================================
 run_dependency() {
     local target_algo="$1"
     log "--> Triggering dependency evaluation for: ${target_algo}"
-    
+
     local cmd=("bash" "${BASH_SOURCE[0]}" "--algo" "${target_algo}")
-    
+
     [[ ${is_real} -eq 1 ]] && cmd+=("--real")
     [[ ${is_synthetic} -eq 1 ]] && cmd+=("--synthetic")
     [[ -n "${network_id}" ]] && cmd+=("--network" "${network_id}")
@@ -202,14 +202,14 @@ run_dependency() {
     [[ -n "${custom_input}" ]] && cmd+=("--input-edgelist" "${custom_input}")
     [[ -n "${custom_out_dir}" ]] && cmd+=("--output-dir" "${custom_out_dir}")
     [[ -n "${custom_gt}" ]] && cmd+=("--input-gt-clustering" "${custom_gt}")
-    
+
     # Cascade the evaluation flags so the winning symlink naturally references valid stats/acc directories
     [[ ${run_stats_flag} -eq 1 ]] && cmd+=("--run-stats")
     [[ ${run_acc_flag} -eq 1 ]] && cmd+=("--run-acc")
     [[ ${run_cc_flag} -eq 1 ]] && cmd+=("--run-cc")
     [[ ${run_wcc_flag} -eq 1 ]] && cmd+=("--run-wcc")
     [[ ${run_cm_flag} -eq 1 ]] && cmd+=("--run-cm")
-    
+
     "${cmd[@]}" || { log "CRITICAL: Dependency ${target_algo} failed."; exit 1; }
 }
 
@@ -219,15 +219,15 @@ run_dependency() {
 run_stats() {
     if [ "${run_stats_flag}" -eq 0 ]; then return; fi
     local edge_file=$1; local com_file=$2; local stats_dir=$3
-    
+
     log "Evaluating stats state via Python StateTracker..."
     mkdir -p "${stats_dir}"
-    
+
     { /usr/bin/time -v python "${SCRIPT_DIR}/network_evaluation/network_stats/compute_cluster_stats.py" \
         --network "${edge_file}" \
         --community "${com_file}" \
         --outdir "${stats_dir}"; } 2> "${stats_dir}/error.log"
-        
+
     if [ ${?} -ne 0 ]; then
         log "ERROR: Stats computation failed for ${stats_dir}."
     else
@@ -242,16 +242,16 @@ run_accuracy() {
         return
     fi
     local edge_file=$1; local gt_f=$2; local est_file=$3; local acc_d=$4
-    
+
     log "Evaluating accuracy state via Python StateTracker..."
     mkdir -p "${acc_d}"
-    
+
     { /usr/bin/time -v python "${SCRIPT_DIR}/network_evaluation/commdet_acc/compute_cd_accuracy.py" \
         --input-network "${edge_file}" \
         --gt-clustering "${gt_f}" \
         --est-clustering "${est_file}" \
         --output-prefix "${acc_d}/result"; } 2> "${acc_d}/error.log"
-        
+
     if [ ${?} -ne 0 ]; then
         log "ERROR: Accuracy computation failed for ${acc_d}."
     else
@@ -337,20 +337,20 @@ if ! is_step_done "${base_done}"; then
             sbm_flat_dc_root="${base_root_clusterings}/sbm-flat-dc${opt_subpath}"
             sbm_flat_ndc_root="${base_root_clusterings}/sbm-flat-ndc${opt_subpath}"
             sbm_flat_pp_root="${base_root_clusterings}/sbm-flat-pp${opt_subpath}"
-            
+
             mkdir -p "${out_dir}"
             { timeout "${TIMEOUT}" /usr/bin/time -v python "${SCRIPT_DIR}/src/sbm/choose_best_sbm.py" \
                 --entropy_files "${sbm_flat_dc_root}/entropy.txt" "${sbm_flat_ndc_root}/entropy.txt" "${sbm_flat_pp_root}/entropy.txt" \
                 --com_files "${sbm_flat_dc_root}/com.csv" "${sbm_flat_ndc_root}/com.csv" "${sbm_flat_pp_root}/com.csv" \
                 --model_names "sbm-flat-dc" "sbm-flat-ndc" "sbm-flat-pp" \
                 --out_dir "${out_dir}"; } 1> "${out_dir}/out.log" 2> "${out_dir}/error.log"
-            
+
             [ -f "${out_dir}/best_model.txt" ] && log "Best SBM selected: $(cat "${out_dir}/best_model.txt")" || log "Error: best_model.txt missing."
         elif [[ ${sbm_model} == "nested-best" ]]; then
             log "Selecting best nested-sbm..."
             sbm_nested_dc_root="${base_root_clusterings}/sbm-nested-dc${opt_subpath}"
             sbm_nested_ndc_root="${base_root_clusterings}/sbm-nested-ndc${opt_subpath}"
-            
+
             mkdir -p "${out_dir}"
             { timeout "${TIMEOUT}" /usr/bin/time -v python "${SCRIPT_DIR}/src/sbm/choose_best_sbm.py" \
                 --entropy_files "${sbm_nested_dc_root}/entropy.txt" "${sbm_nested_ndc_root}/entropy.txt" \
@@ -374,7 +374,7 @@ if ! is_step_done "${base_done}"; then
         base_inputs="${inp_edge} ${base_root_clusterings}/sbm-nested-dc${opt_subpath}/com.csv ${base_root_clusterings}/sbm-nested-dc${opt_subpath}/entropy.txt ${base_root_clusterings}/sbm-nested-ndc${opt_subpath}/com.csv ${base_root_clusterings}/sbm-nested-ndc${opt_subpath}/entropy.txt"
     fi
 
-    if [ -f "${base_com}" ] || [ -f "${out_dir}/best_model.txt" ]; then 
+    if [ -f "${base_com}" ] || [ -f "${out_dir}/best_model.txt" ]; then
         mark_done "${base_done}" "Base Clustering (${algo})" "${base_inputs}" "${out_dir}"
     fi
 else
@@ -452,7 +452,7 @@ if [[ ${sbm_model} == "flat-best" || ${sbm_model} == "nested-best" ]]; then
                 log "Warning: Expected post-processing stats ${target_pp_stats} not found. Symlink not created."
             fi
         fi
-        
+
         if [ "${run_acc_flag}" -eq 1 ] && [ "${has_gt}" -eq 1 ]; then
             target_pp_acc="${base_root_acc}/${best_algo}+${pp_tag}${opt_subpath}"
             link_pp_acc="${base_root_acc}/${algo}+${pp_tag}${opt_subpath}"
@@ -483,7 +483,7 @@ if [ "${IS_RUN_CC}" -eq 1 ]; then
     acc_cc_dir="${base_root_acc}/${suffix}${opt_subpath}"
     cc_com="${out_cc_dir}/com.csv"
     cc_done="${out_cc_dir}/done"
-    
+
     log "Evaluating CC state..."
     if ! is_step_done "${cc_done}"; then
         log "Running CC..."
@@ -496,7 +496,7 @@ if [ "${IS_RUN_CC}" -eq 1 ]; then
             mark_done "${cc_done}" "CC" "${inp_edge} ${base_com}" "${out_cc_dir}"
         fi
     else log "CC already up-to-date."; fi
-    
+
     if [ -f "${cc_com}" ]; then
         run_stats "${inp_edge}" "${cc_com}" "${stats_cc_dir}"
         run_accuracy "${inp_edge}" "${gt_file}" "${cc_com}" "${acc_cc_dir}"
@@ -504,7 +504,7 @@ if [ "${IS_RUN_CC}" -eq 1 ]; then
 fi
 
 # ==========================================
-# 3. Run WCC 
+# 3. Run WCC
 # ==========================================
 if [ "${IS_RUN_WCC}" -eq 1 ]; then
     suffix="${algo}+wcc${CRIT_SUFFIX}"
@@ -513,7 +513,7 @@ if [ "${IS_RUN_WCC}" -eq 1 ]; then
     acc_wcc_dir="${base_root_acc}/${suffix}${opt_subpath}"
     wcc_com="${out_wcc_dir}/com.csv"
     wcc_done="${out_wcc_dir}/done"
-    
+
     log "Evaluating WCC state..."
     if ! is_step_done "${wcc_done}"; then
         log "Running WCC (${WCC_CRIT})..."
@@ -543,7 +543,7 @@ if [ "${IS_RUN_CM}" -eq 1 ]; then
     acc_cm_dir="${base_root_acc}/${suffix}${opt_subpath}"
     cm_com="${out_cm_dir}/com.csv"
     cm_done="${out_cm_dir}/done"
-    
+
     log "Evaluating CM state..."
     if ! is_step_done "${cm_done}"; then
         log "Running CM (${CM_CRIT})..."

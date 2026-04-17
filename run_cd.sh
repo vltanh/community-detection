@@ -1,7 +1,6 @@
 #!/bin/bash
 
 # Constants
-TIMEOUT="5d"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 
 # ==========================================
@@ -58,6 +57,8 @@ run_cc_flag=0
 run_wcc_flag=0
 run_cm_flag=0
 
+TIMEOUT="7d"
+
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --algo) algo="$2"; shift 2 ;;
@@ -76,6 +77,7 @@ while [[ "$#" -gt 0 ]]; do
         --run-cc) run_cc_flag=1; shift 1 ;;
         --run-wcc) run_wcc_flag=1; shift 1 ;;
         --run-cm) run_cm_flag=1; shift 1 ;;
+        --timeout) TIMEOUT="$2"; shift 2 ;;
         -*) log "Unknown parameter passed: $1"; exit 1 ;;
         *) log "Unexpected argument: $1"; exit 1 ;;
     esac
@@ -202,6 +204,7 @@ run_dependency() {
     [[ -n "${custom_input}" ]] && cmd+=("--input-edgelist" "${custom_input}")
     [[ -n "${custom_out_dir}" ]] && cmd+=("--output-dir" "${custom_out_dir}")
     [[ -n "${custom_gt}" ]] && cmd+=("--input-gt-clustering" "${custom_gt}")
+    [[ -n "${TIMEOUT}" ]] && cmd+=("--timeout" "${TIMEOUT}")
 
     # Cascade the evaluation flags so the winning symlink naturally references valid stats/acc directories
     [[ ${run_stats_flag} -eq 1 ]] && cmd+=("--run-stats")

@@ -1,34 +1,28 @@
-# CC — technical reference
+# CC: technical reference
 
 [← back to index](../algorithms.md)
 
-Connected-Component split. Per-cluster BFS that catches algorithms which
-emitted a label without checking that the cluster's induced subgraph is
-actually connected. Park 2025 / Vu-Le 2026 introduced CC + WCC as
-standalone post-processors (no re-clustering loop, unlike CM).
+Connected-Component split. Per-cluster BFS that catches algorithms
+which emitted a label without checking that the cluster's induced
+subgraph is actually connected. Park 2025 / Vu-Le 2026 introduced CC +
+[WCC](./wcc.md) as standalone post-processors (no re-clustering loop,
+unlike [CM](./cm.md)).
 
-The page at [`comdet/cc.html`](https://vltanh.me/comdet/cc.html) walks
-the algorithm on the 32-node fixture; this file is the technical
-companion: where the code lives, what each stage does, and how the
-shipped binary differs from the paper.
+Companion to [`comdet/cc.html`](https://vltanh.me/comdet/cc.html). The
+page explains the algorithm in plain English; this file holds the
+implementation detail and source-code pointers.
 
 ## Provenance
 
-- Paper (canonical): Park M, Tabatabaee Y, Ramavarapu V, Liu B,
-  Pailodi VK, Ramachandran R, Korobskiy D, Ayres F, Chacko G, Warnow T.
-  "Improved community detection using stochastic block models."
-  *Complex Networks and their Applications XII*, Springer, 2025.
-  DOI: <https://doi.org/10.1007/978-3-031-82435-7_9>.
-- Paper (extension): Vu-Le T-A, Park M, Chen E, Warnow T.
-  "Using stochastic block models for community detection."
-  *Applied Network Science* 11:2, 2026.
-  DOI: <https://doi.org/10.1007/s41109-025-00747-2>.
-  Local PDF: `~/Downloads/Research/s41109-025-00747-2.pdf`.
+- Papers: Park 2025 + Vu-Le 2026; full citations + DOIs in
+  [`wcc.md` § Provenance](./wcc.md#provenance) (CC and WCC share both
+  papers).
 - Binary: same `constrained_clustering` C++ binary that hosts WCC and
   CM (Park 2024). CC is invoked as `MincutOnly --connectedness-criterion 0`;
   there is no separate `CC` subcommand.
 - JS port (planned): `vltanh.github.io/comdet/js/cc/cc.js`. Walker
-  pending the Phase 4c kernel port.
+  pending the Phase 4c kernel port. CC's `--connectedness-criterion` is
+  fixed at `0` so no parser walker is needed.
 
 ## Entrypoint
 
@@ -45,7 +39,7 @@ constrained_clustering MincutOnly \
 ```
 
 Pipeline wrapper:
-[`src/cc/pipeline.sh`](../../src/cc/pipeline.sh) — fixes
+[`src/cc/pipeline.sh`](../../src/cc/pipeline.sh) fixes
 `--connectedness-criterion 0` (the `Simple` branch in the binary) and
 forwards the rest from `run_cd.sh`.
 
@@ -59,21 +53,22 @@ component of every input cluster's induced subgraph is emitted directly
 
 ## Stages
 
-### Stage 1 — load + remap
+### Stage 1: load + remap
 
-[`mincut_only.cpp:18-23`](../../constrained-clustering/src/mincut_only.cpp#L18).
+[`mincut_only.cpp:18-29`](../../constrained-clustering/src/mincut_only.cpp#L18).
 Read edgelist, build an `original_id → consecutive_int` map, load the
 graph through igraph. Read the existing clustering into a
-`node_id → cluster_id` map.
+`node_id → cluster_id` map via `ReadCommunities` at
+[`mincut_only.cpp:29`](../../constrained-clustering/src/mincut_only.cpp#L29).
 
-### Stage 2 — strip inter-cluster edges
+### Stage 2: strip inter-cluster edges
 
 [`constrained.h:123`](../../constrained-clustering/includes/constrained.h#L123)
 (`RemoveInterClusterEdges`). Iterates every edge; deletes any edge whose
 endpoints differ in `cluster_id`. The graph still has the same vertex
 set; only intra-cluster edges remain.
 
-### Stage 3 — connected components
+### Stage 3: connected components
 
 [`constrained.h:393`](../../constrained-clustering/includes/constrained.h#L393)
 (`GetConnectedComponents`). Wraps `igraph_connected_components(...,
@@ -83,14 +78,14 @@ size 1) are dropped at this layer
 ([`constrained.h:409`](../../constrained-clustering/includes/constrained.h#L409):
 `if (size > 1)`).
 
-### Stage 4 — direct emit
+### Stage 4: direct emit
 
 [`mincut_only.cpp:43-45`](../../constrained-clustering/src/mincut_only.cpp#L43).
 Under `Simple`, every component goes straight onto
 `done_being_mincut_clusters`; no mincut, no recursion, no threshold
 check. The output writer
 ([`constrained.cpp:135`](../../constrained-clustering/src/constrained.cpp#L135),
-`WriteClusterQueue` — singleton-id form) assigns consecutive
+`WriteClusterQueue` in singleton-id form) assigns consecutive
 0-indexed cluster ids on the fly.
 
 ## Output
@@ -134,11 +129,9 @@ Values added by the wrapper but not consumed by CC: `--mincut-type` and
 
 Same input → bit-identical `com.csv`, no seed knob needed.
 
-## Difference from CM (Park 2024)
+## Difference from WCC and CM
 
-CC is "the no-threshold, no-recursion subset of WCC". The full table:
-
-| | CC | WCC | CM |
+| | CC | [WCC](./wcc.md) | [CM](./cm.md) |
 |---|---|---|---|
 | Threshold | `Simple` (= 0; trip on disconnect only) | `f(n) = log_10(n)` (default) | `f(n) = log_10(n)` (default; CM/pipeline.sh sets `0.2n^0.5`) |
 | Loop | one pass | recursive split until well-connected | recursive split + re-cluster halves |
@@ -146,9 +139,6 @@ CC is "the no-threshold, no-recursion subset of WCC". The full table:
 | Min cluster size `B` filter | optional (post-hoc) | optional (post-hoc) | yes (default 11; not enforced by binary, applied by upstream filter) |
 | Pre-prune low-degree nodes? | no | no | yes (with `--prune`) |
 | Heaviest? | lightest | medium | heaviest |
-
-CC is the cheapest of the three. Cost = one BFS pass per cluster. No
-mincut backend touched.
 
 ## Behaviour on the comdet 32-node fixture
 
@@ -170,15 +160,7 @@ If the input partition is the planted ground-truth (treating outliers
 CC splits C into `{20,21,22}` and `{23,24,25}`. A, B, D pass through.
 Singleton outliers drop. Output partition has 5 clusters (A, B, C₁, C₂, D).
 
-The single-cluster fates per Park 2025 / Vu-Le 2026 terminology — extant,
-reduced, split — collapse to extant + split for CC since there is no
-threshold to "reduce" against.
+The single-cluster fates per Park 2025 / Vu-Le 2026 terminology
+(extant, reduced, split) collapse to extant + split for CC, since there
+is no threshold to "reduce" against.
 
-## When CC is enough vs when WCC adds value
-
-Vu-Le 2026 §4: on graph-tool flat dc/ndc/pp + nested SBMs,
-**CC and WCC both improve accuracy** on most synthetic benchmarks; WCC's
-gain is uniformly larger because it also catches the weak-cut case (a
-cluster held together by a single bridge passes CC but fails WCC). The
-exception is sparse near-empty large clusters where WCC over-splits;
-there CC alone is the safer choice.

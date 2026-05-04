@@ -3,33 +3,45 @@
 [← back to index](../algorithms.md)
 
 Bayesian inference of a flat or nested stochastic block model. Seven
-gallery pages share one JS kernel; this doc covers the kernel and
-reads it through the lens of `sbm-flat-dc` (the only variant fully
-wired today).
+gallery pages share one JS kernel: five per-variant walkers
+(`sbm-flat-{dc,ndc,pp}`, `sbm-nested-{dc,ndc}`) plus two meta
+comparison pages (`sbm-flat-best`, `sbm-nested-best`). The walker
+pages all run through `mountWalkerPage`; the meta pages through
+`mountComparePage`. Per-variant detail is in the variant table
+below; per-page glue files are one-config wrappers around those two
+factories.
 
 ## Pages and flags
 
-| Page | `degCorr` | Entropy form | Status |
+| Page | `mode` | Entropy form | Status |
 | --- | --- | --- | --- |
-| `sbm-flat-dc` | `true` | sparse, DC | wired |
-| `sbm-flat-ndc` | `false` | sparse, NDC | UC stub |
-| `sbm-flat-pp` | n/a | planted-partition | UC stub |
-| `sbm-nested-dc` | `true` | sparse, DC, nested levels | UC stub |
-| `sbm-nested-ndc` | `false` | sparse, NDC, nested levels | UC stub |
-| `sbm-flat-best` | meta | runs flat-{dc, ndc, pp}, picks min Σ | UC stub |
-| `sbm-nested-best` | meta | runs nested-{dc, ndc}, picks min Σ | UC stub |
+| `sbm-flat-dc` | `dc` | sparse, DC + degree DL | wired (walker) |
+| `sbm-flat-ndc` | `ndc` | sparse, NDC | wired (walker) |
+| `sbm-flat-pp` | `pp` | Bernoulli, two-rate (Zhang + Peixoto 2020) | wired (walker) |
+| `sbm-nested-dc` | `dc` | level-0 walker only; level-1+ MCMC pending | wired (walker), nested prose stub |
+| `sbm-nested-ndc` | `ndc` | level-0 walker only; level-1+ MCMC pending | wired (walker), nested prose stub |
+| `sbm-flat-best` | meta | runs flat-{dc, ndc, pp}, compares Σ, flags winner | wired (no walker; comparison panel) |
+| `sbm-nested-best` | meta | runs nested-{dc, ndc}, compares Σ | wired (no walker; comparison panel) |
+
+The seven pages share `block_state.js` + `mcmc.js`. Per-page glue
+files live alongside (`page_flat_{dc,ndc,pp}.js`,
+`page_nested_{dc,ndc}.js`, `page_flat_best.js`,
+`page_nested_best.js`).
 
 ## Kernel
 
-Three JS modules under
+JS modules under
 [`vltanh.github.io/comdet/js/sbm/`](../../vltanh.github.io/comdet/js/sbm/),
 loaded in dependency order:
 
 | Module | Substance | Source |
 | --- | --- | --- |
 | `util.js` | `lgamma`, `lbinom`, `xlogx`, `safelog`, `logChooseRep` | port of [`graph-tool/src/graph/inference/support/util.hh`](../../graph-tool/src/graph/inference/support/util.hh) |
-| `block_state.js` | `BlockState`: admin tables (`e_rs`, `e_r`, `n_r`, `k_v`) + `entropy`, `virtualMove`, `moveVertex` | port of [`graph_blockmodel.hh:111`](../../graph-tool/src/graph/inference/blockmodel/graph_blockmodel.hh#L111) (template) + [`graph_blockmodel_entropy.hh`](../../graph-tool/src/graph/inference/blockmodel/graph_blockmodel_entropy.hh) (eterm/vterm/get_edges_dl) |
+| `block_state.js` | `BlockState`: admin tables (`e_rs`, `e_r`, `n_r`, `k_v`, `Bne` non-empty count) + `entropy`, `virtualMove`, `moveVertex`, `nonEmptyBlocks`, `blockOf`, `blockSize`, `blockMembership` | port of [`graph_blockmodel.hh:111`](../../graph-tool/src/graph/inference/blockmodel/graph_blockmodel.hh#L111) (template) + [`graph_blockmodel_entropy.hh`](../../graph-tool/src/graph/inference/blockmodel/graph_blockmodel_entropy.hh) (eterm/vterm/get_edges_dl) |
 | `mcmc.js` | `mcmcSweep`, `equilibrate`, `candidatePool` | port of [`mcmc_loop.hh:104-200`](../../graph-tool/src/graph/inference/loops/mcmc_loop.hh#L104) |
+| `trace_plot.js` | `tracePlot({hostId, traces, xMax})` — shared single-/multi-trace line plot for the equilibration panels | own |
+| `walker_page.js` | `mountWalkerPage({gen, blockOpts, sweeps, initB})` — full page glue for the five per-variant walker pages | own |
+| `compare_page.js` | `mountComparePage({gen, variants})` + `VARIANTS = {dc, ndc, pp}` registry — full page glue for the two `*-best` comparison pages | own |
 
 Substrate: the SBM kernel reuses `COMDET.LOUVAIN.Graph`, `MT19937`,
 `shuffle` from
@@ -40,22 +52,25 @@ counts $e_{rs}$, not Leiden's per-community weight caches.
 ## Description length
 
 The total Σ the kernel minimises decomposes into four terms (Peixoto
-2017 ch. 11 §V + §VI). All formulas verbatim from
-[`graph_blockmodel_entropy.hh`](../../graph-tool/src/graph/inference/blockmodel/graph_blockmodel_entropy.hh)
-unless noted; JS implementations all in
-[`block_state.js`](../../vltanh.github.io/comdet/js/sbm/block_state.js).
+2017 ch. 11 §V + §VI). The kernel uses **exact microcanonical**
+forms (lgamma + lbinom) for all three modes so absolute Σ values are
+commensurable in MDL across DC/NDC/PP, allowing the `*-best` pages to
+compare them under a single Bayes-factor reading.
 
 | Term | Formula | Code path |
 | --- | --- | --- |
-| Sparse entropy (DC) | $\sum_r x\log x(e_r) - \sum_{r<s} x\log x(e_{rs}) - \tfrac{1}{2}\sum_r x\log x(e_{rr})$ | [`block_state.js`](../../vltanh.github.io/comdet/js/sbm/block_state.js) `sparseEntropy()`; verbatim eterm/vterm at [`graph_blockmodel_entropy.hh:102, :118`](../../graph-tool/src/graph/inference/blockmodel/graph_blockmodel_entropy.hh#L102) |
-| Sparse entropy (NDC) | replaces $x\log x(e_r)$ with $e_r \cdot \log n_r$ in the vertex term | same; vterm branches on `deg_corr` |
-| Edges DL | $\log\binom{B(B+1)/2 + E - 1}{E}$ | [`block_state.js`](../../vltanh.github.io/comdet/js/sbm/block_state.js) `edgesDl()`; verbatim of [`graph_blockmodel_entropy.hh:172`](../../graph-tool/src/graph/inference/blockmodel/graph_blockmodel_entropy.hh#L172) (`get_edges_dl`) |
-| Partition DL | $\log N! - \sum_r \log n_r! + \log\binom{N-1}{B-1} + \log N$ | [`block_state.js`](../../vltanh.github.io/comdet/js/sbm/block_state.js) `partitionDl()`; Peixoto 2017 Eq 17 |
-| Degree DL (DC only) | $\sum_r \log\binom{n_r + e_r - 1}{e_r}$ | [`block_state.js`](../../vltanh.github.io/comdet/js/sbm/block_state.js) `degreeDlUniform()`; Peixoto 2017 Eq 44 (uniform variant) |
+| Exact entropy (DC) | $\sum_r \log(e_r!) - \sum_{r<s} \log(e_{rs}!) - \sum_r \log(e_{rr}!!) - \sum_i \log(k_i!)$ (last term is partition-independent but model-class-specific; included to commensurate with NDC) | [`block_state.js`](../../vltanh.github.io/comdet/js/sbm/block_state.js) `exactEntropy()` (vertex + edge terms) + `dcDegreeConst` (per-vertex term); per Peixoto Eq 43, simple-graph form |
+| Exact entropy (NDC) | $\sum_r e_r \log n_r - \sum_{r<s} \log(e_{rs}!) - \sum_r \log(e_{rr}!!)$ | same; vterm branches on `degCorr`; per Peixoto Eq 22, simple-graph form |
+| Exact PP likelihood | $\log\binom{M_{\text{in}}}{E_{\text{in}}} + \log\binom{M_{\text{out}}}{E_{\text{out}}}$ (uniform draw from simple graphs with exactly $E_{\text{in}}$ internal + $E_{\text{out}}$ external edges) | `ppLikelihood()`; microcanonical PP per [Zhang + Peixoto 2020](https://doi.org/10.1103/PhysRevResearch.2.043271). Source map: [`planted_partition.py:34`](../../graph-tool/src/graph_tool/inference/planted_partition.py#L34) |
+| Edges DL (DC/NDC) | $\log\binom{B(B+1)/2 + E - 1}{E}$ | `edgesDl()`; verbatim of [`graph_blockmodel_entropy.hh:172`](../../graph-tool/src/graph/inference/blockmodel/graph_blockmodel_entropy.hh#L172) (`get_edges_dl`) |
+| Edges DL (PP) | $\log(\min(E, M_{\text{in}}) + 1)$ (uniform prior on the integer $E_{\text{in}}$; $E_{\text{out}}$ follows from $E$) | `ppEdgesDl()` |
+| Partition DL | $\log N! - \sum_r \log n_r! + \log\binom{N-1}{B-1} + \log N$ | `partitionDl()`; Peixoto 2017 Eq 17 |
+| Degree DL (DC only) | $\sum_r \log\binom{n_r + e_r - 1}{e_r}$ | `degreeDlUniform()`; Peixoto 2017 Eq 44 (uniform variant) |
 
-`BlockState` uses graph-tool's diagonal convention: $e_{rr}$ counts each
+`BlockState` uses the doubled-diagonal convention: $e_{rr}$ counts each
 internal edge twice (every endpoint is a stub in $r$). A self-loop on
-$v$ adds 2 to $e_{b_v, b_v}$.
+$v$ adds 2 to $e_{b_v, b_v}$. The `e_{rr}!!` term in the entropy unfolds
+to $(e_{rr}/2) \cdot \log 2 + \log((e_{rr}/2)!)$ for the doubled count.
 
 `exact = false` is the default: sparse-Stirling approximation, what
 canonical `mcmc_sweep` uses on every move. The `exact` form
@@ -180,11 +195,33 @@ flags this.
 - [`graph_blockmodel.hh`](../../graph-tool/src/graph/inference/blockmodel/graph_blockmodel.hh): canonical `BlockState` template
 - [`mcmc_loop.hh`](../../graph-tool/src/graph/inference/loops/mcmc_loop.hh): canonical sweep body
 
-## Other variants (UC)
+## Variant glue (per page)
 
-Each variant slots into the same `BlockState` + `mcmcSweep` substrate:
+Each per-page glue file is a one-config wrapper over either
+`mountWalkerPage` or `mountComparePage`. The defaults `mode` defines
+which entropy + DL chain runs:
 
-- `sbm-flat-ndc`: `degCorr: false`. Drops the degree DL; vterm switches to $e_r \cdot \log n_r$.
-- `sbm-flat-pp`: replaces `BlockState` with a `PPBlockState`-style entropy (one within-block rate, one between-block rate). Source: [`planted_partition.py:34`](../../graph-tool/src/graph_tool/inference/planted_partition.py#L34).
-- `sbm-nested-{dc,ndc}`: composes flat `BlockState` per level (level 0 the actual graph, level $l$ the level-$l-1$ block-graph). Source: [`nested_blockmodel.py:33`](../../graph-tool/src/graph_tool/inference/nested_blockmodel.py#L33).
-- `sbm-{flat,nested}-best`: meta-page running all variants in parallel, rendering lowest-Σ winner. Mirrors `run_cd.sh` `*-best` cascade and `choose_best_sbm.py`.
+| Variant | `mountX` call | Glue file |
+| --- | --- | --- |
+| `flat-dc` | `mountWalkerPage({ gen: "sbm-flat-dc",  blockOpts: { mode: "dc"  } })` | [`page_flat_dc.js`](../../vltanh.github.io/comdet/js/sbm/page_flat_dc.js) |
+| `flat-ndc` | `mountWalkerPage({ gen: "sbm-flat-ndc", blockOpts: { mode: "ndc" } })` | [`page_flat_ndc.js`](../../vltanh.github.io/comdet/js/sbm/page_flat_ndc.js) |
+| `flat-pp` | `mountWalkerPage({ gen: "sbm-flat-pp",  blockOpts: { mode: "pp"  } })` | [`page_flat_pp.js`](../../vltanh.github.io/comdet/js/sbm/page_flat_pp.js) |
+| `nested-dc` | `mountWalkerPage({ gen: "sbm-nested-dc",  blockOpts: { mode: "dc"  } })` | [`page_nested_dc.js`](../../vltanh.github.io/comdet/js/sbm/page_nested_dc.js) |
+| `nested-ndc` | `mountWalkerPage({ gen: "sbm-nested-ndc", blockOpts: { mode: "ndc" } })` | [`page_nested_ndc.js`](../../vltanh.github.io/comdet/js/sbm/page_nested_ndc.js) |
+| `flat-best` | `mountComparePage({ gen: "sbm-flat-best",  variants: [V.dc, V.ndc, V.pp] })` | [`page_flat_best.js`](../../vltanh.github.io/comdet/js/sbm/page_flat_best.js) |
+| `nested-best` | `mountComparePage({ gen: "sbm-nested-best", variants: [V.dc, V.ndc] })` | [`page_nested_best.js`](../../vltanh.github.io/comdet/js/sbm/page_nested_best.js) |
+
+The `dc` mode auto-enables degree DL; `ndc` skips it; `pp` swaps the
+sparse-entropy + flat-edges-DL chain for `ppLikelihood + ppEdgesDl`.
+`partitionDl` is on by default for every mode. Defaults match
+graph-tool's `BlockState(...)` / `PPBlockState(...)` constructor
+defaults; explicit per-variant DL flags are intentionally omitted from
+the glue files.
+
+## Future work
+
+- **Nested level-1+ MCMC**. The current nested pages run only the level-0 walker; the canonical [`nested_blockmodel.py:33`](../../graph-tool/src/graph_tool/inference/nested_blockmodel.py#L33) composes per-level `BlockState` instances and runs MCMC on each level alongside joint moves. Implementation: a `NestedBlockState` wrapper that owns an array of `BlockState`s, rebuilds level $l$'s graph as the collapsed block-graph from level $l-1$ on every move, and exposes a multi-level `mcmcSweep` that visits each level in turn. Total Σ adds the per-level partition DL and per-level edges DL contributions ([Peixoto 2017 Eq 28-30](https://doi.org/10.1002/9781119483298.ch11)).
+- **PP-aware proposal distribution**. The PP variant currently uses the same uniform candidate pool as DC/NDC. Canonical PP biases proposals towards the local neighbourhood ([`planted_partition.py`](../../graph-tool/src/graph_tool/inference/planted_partition.py) `sample_block`), which converges much faster on assortative networks.
+- **Multilevel merge moves**. Single-vertex MH only finds the right partition slowly on small graphs and not at all reliably on large ones. The canonical [`multilevel_mcmc_sweep`](../../graph-tool/src/graph/inference/loops/multilevel.hh#L77) interleaves agglomerative merges with single-vertex moves; porting `merge_sweep` to JS is the next big step.
+- **PCG64 RNG**. `pcg64_k1024` ([`graph-tool/src/graph/random.hh:24`](../../graph-tool/src/graph/random.hh#L24)) replaces MT19937 in the canonical sampler. Bit-equivalence with canonical seeded runs requires this.
+- **Verification**. Phase 4c §4e matrix has not been run yet for any variant. The pages all carry a draft caveat.

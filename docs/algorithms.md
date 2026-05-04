@@ -15,7 +15,11 @@ shape, verification status) lives in
 | [`leiden-cpm`](./algorithms/leiden.md) | Refined modularity ascent + CPM quality | Move + refine + aggregate, CPM resolution sweep | [`leidenalg/`](../leidenalg/) (Python wrapper) + [`libleidenalg/`](../libleidenalg/) (algorithm body) |
 | [`leiden-mod`](./algorithms/leiden.md) | Same body, modularity quality | same | same |
 | [`sbm-flat-dc`](./algorithms/sbm.md) | Bayesian SBM, flat, degree-corrected | Single-vertex Metropolis-Hastings on description length Σ | [`graph-tool/`](../graph-tool/) (release-2.98) `BlockState` |
-| `sbm-{flat-ndc, flat-pp, nested-dc, nested-ndc, flat-best, nested-best}` | SBM variants over the same kernel | same Σ minimisation, variant-specific entropy | same |
+| [`sbm-flat-ndc`](./algorithms/sbm.md) | flat, non-degree-corrected | same kernel, `mode: "ndc"` | same |
+| [`sbm-flat-pp`](./algorithms/sbm.md) | flat, planted-partition (Bernoulli 2-rate) | same kernel, `mode: "pp"` | [Zhang+Peixoto 2020](https://doi.org/10.1103/PhysRevResearch.2.043271); [`planted_partition.py`](../graph-tool/src/graph_tool/inference/planted_partition.py) |
+| [`sbm-nested-{dc,ndc}`](./algorithms/sbm.md) | Hierarchical SBM, level-0 walker | level-0 only; level-1+ MCMC pending | [Peixoto 2014](https://doi.org/10.1103/PhysRevX.4.011047); [`nested_blockmodel.py`](../graph-tool/src/graph_tool/inference/nested_blockmodel.py) |
+| [`sbm-flat-best`](./algorithms/sbm.md) | meta: runs flat-{dc,ndc,pp}, picks min Σ | shared init, triple equilibration, winner highlight | mirrors `run_cd.sh flat-best` cascade |
+| [`sbm-nested-best`](./algorithms/sbm.md) | meta: runs nested-{dc,ndc}, picks min Σ | shared init, dual equilibration | mirrors `run_cd.sh nested-best` cascade |
 | [`ikc`](./algorithms/ikc.md) | k-core peel | Iterated k-core extraction + modularity gate | NetworKit core decomposition |
 | [`cc`](./algorithms/cc.md) | Post-proc: connected-component split | Per-cluster BFS, no threshold, no recursion | [`constrained-clustering/`](../constrained-clustering/) `MincutOnly --connectedness-criterion 0` |
 | [`wcc`](./algorithms/wcc.md) | Post-proc: well-connected-components split | Per-cluster mincut + threshold check, recurse on weak cuts | [`constrained-clustering/`](../constrained-clustering/) `MincutOnly` over VieCut |

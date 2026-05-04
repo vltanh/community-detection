@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import graph_tool.all as gt
+import numpy as np
 import pandas as pd
 
 from pipeline_common import drop_singleton_clusters, standard_setup, timed
@@ -30,6 +31,7 @@ def parse_args():
         choices=["flat-dc", "flat-ndc", "flat-pp", "nested-dc", "nested-ndc"],
         required=True,
     )
+    parser.add_argument("--seed", type=int, default=1)
     return parser.parse_args()
 
 
@@ -39,6 +41,9 @@ def main():
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
     is_nested = args.method.startswith("nested")
+
+    np.random.seed(args.seed)
+    gt.seed_rng(args.seed)
 
     with timed("load_network"):
         g = load_network(args.edgelist)

@@ -51,7 +51,8 @@ CD_STAGE_NAME="sbm-${SBM_METHOD}"
 CD_CMD=(python "${SCRIPT_DIR}/run_sbm.py"
         --edgelist "${INPUT_EDGELIST}"
         --output-directory "${OUTPUT_DIR}"
-        --method "${SBM_METHOD}")
+        --method "${SBM_METHOD}"
+        --seed "${SEED}")
 CD_INPUTS="${INPUT_EDGELIST}"
 CD_OUTPUTS="${OUTPUT_DIR}/com.csv ${OUTPUT_DIR}/entropy.txt"
 CD_PARAMS=("method=${SBM_METHOD}" "seed=${SEED}" "n_threads=${N_THREADS}")

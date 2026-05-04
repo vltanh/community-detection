@@ -1,11 +1,12 @@
-import sys
-import time
-import logging
 import argparse
+import logging
+import sys
 from pathlib import Path
 
 import graph_tool.all as gt
 import pandas as pd
+
+from pipeline_common import drop_singleton_clusters, standard_setup, timed
 
 
 def load_network(edgelist_fn):
@@ -21,143 +22,66 @@ def load_network(edgelist_fn):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--edgelist",
-        type=str,
-        required=True,
-        help="Path to the edgelist file",
-    )
-    parser.add_argument(
-        "--output-directory",
-        type=str,
-        required=True,
-        help="Directory to save the output files",
-    )
+    parser.add_argument("--edgelist", type=str, required=True)
+    parser.add_argument("--output-directory", type=str, required=True)
     parser.add_argument(
         "--method",
         type=str,
         choices=["flat-dc", "flat-ndc", "flat-pp", "nested-dc", "nested-ndc"],
         required=True,
-        help="Method to use for model selection",
     )
     return parser.parse_args()
 
 
-args = parse_args()
-edgelist_fn = args.edgelist
-output_dir = Path(args.output_directory)
-method = args.method
-is_nested = method.startswith("nested")
+def main():
+    args = parse_args()
+    output_dir = standard_setup(args.output_directory)
+    logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
-# ===========
+    is_nested = args.method.startswith("nested")
 
-output_dir.mkdir(parents=True, exist_ok=True)
+    with timed("load_network"):
+        g = load_network(args.edgelist)
 
-logging.basicConfig(
-    filename=output_dir / "run.log",
-    filemode="w",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
+    with timed("sbm_init_state"):
+        if args.method in ("flat-dc", "flat-ndc"):
+            state = gt.minimize_blockmodel_dl(
+                g,
+                state=gt.BlockState,
+                state_args=dict(deg_corr=args.method == "flat-dc"),
+            )
+        elif args.method == "flat-pp":
+            state = gt.minimize_blockmodel_dl(g, state=gt.PPBlockState)
+        else:
+            state = gt.minimize_nested_blockmodel_dl(
+                g, state_args=dict(deg_corr=args.method == "nested-dc")
+            )
 
-# ===========
+    with timed("entropy"):
+        entropy = state.entropy()
+        (output_dir / "entropy.txt").write_text(f"{entropy}\n")
 
-start = time.perf_counter()
+    with timed("save_results"):
+        if not is_nested:
+            partition = state.get_blocks()
+        else:
+            partition = state.get_levels()[0].get_blocks()
 
-g = load_network(edgelist_fn)
+        df = pd.DataFrame(
+            {
+                "node_id": [g.vp.name[v] for v in g.vertices()],
+                "cluster_id": [partition[v] for v in g.vertices()],
+            }
+        )
 
-elapsed = time.perf_counter() - start
-logging.info(f"[TIME] Loading network: {elapsed}")
+        df_filtered = drop_singleton_clusters(df)
+        unique_ids = sorted(df_filtered["cluster_id"].unique())
+        id_map = {old_id: new_id for new_id, old_id in enumerate(unique_ids)}
+        df_filtered = df_filtered.assign(cluster_id=df_filtered["cluster_id"].map(id_map))
+        df_filtered.to_csv(
+            output_dir / "com.csv", index=False, sep=",", header=["node_id", "cluster_id"]
+        )
 
-# ===========
 
-start = time.perf_counter()
-
-if method in ["flat-dc", "flat-ndc"]:
-    state = gt.minimize_blockmodel_dl(
-        g,
-        state=gt.BlockState,
-        state_args=dict(deg_corr=method == "flat-dc"),
-    )
-elif method == "flat-pp":
-    state = gt.minimize_blockmodel_dl(
-        g,
-        state=gt.PPBlockState,
-    )
-elif method in ["nested-dc", "nested-ndc"]:
-    state = gt.minimize_nested_blockmodel_dl(
-        g,
-        state_args=dict(deg_corr=method == "nested-dc"),
-    )
-
-elapsed = time.perf_counter() - start
-logging.info(f"[TIME] Initializing state: {elapsed}")
-
-# ===========
-
-# start = time.perf_counter()
-
-# gt.mcmc_anneal(
-#     state,
-#     beta_range=(1, 10),
-#     niter=1000,
-#     mcmc_equilibrate_args=dict(
-#         force_niter=10,
-#     ),
-# )
-
-# delta_S = 1.0
-# while delta_S > 0:
-#     entropy_before = state.entropy()
-#     state.multiflip_mcmc_sweep(beta=float("inf"), niter=10)
-#     delta_S = entropy_before - state.entropy()
-
-# elapsed = time.perf_counter() - start
-# logging.info(f"[TIME] Refining state and quenching to local minimum: {elapsed}")
-
-# ===========
-
-start = time.perf_counter()
-
-entropy = state.entropy()
-with open(output_dir / "entropy.txt", "w") as f:
-    f.write(f"{entropy}\n")
-
-elapsed = time.perf_counter() - start
-logging.info(f"[TIME] Calculating entropy: {elapsed}")
-
-# ===========
-
-start = time.perf_counter()
-
-if not is_nested:
-    refined_partition = state.get_blocks()
-else:
-    refined_partition = state.get_levels()[0].get_blocks()
-
-data = []
-for v in g.vertices():
-    data.append(
-        {
-            "node_id": g.vp.name[v],
-            "cluster_id": refined_partition[v],
-        }
-    )
-df = pd.DataFrame(data)
-
-cluster_counts = df["cluster_id"].value_counts()
-valid_clusters = cluster_counts[cluster_counts > 1].index
-df_filtered = df[df["cluster_id"].isin(valid_clusters)].copy()
-
-unique_ids = sorted(df_filtered["cluster_id"].unique())
-id_map = {old_id: new_id for new_id, old_id in enumerate(unique_ids)}
-df_filtered["cluster_id"] = df_filtered["cluster_id"].map(id_map)
-
-logging.info(f"Removed {len(df) - len(df_filtered)} singleton nodes.")
-
-output_file = output_dir / "com.csv"
-df_filtered.to_csv(output_file, index=False, sep=",", header=["node_id", "cluster_id"])
-
-elapsed = time.perf_counter() - start
-logging.info(f"[TIME] Storing refined partition: {elapsed}")
+if __name__ == "__main__":
+    main()

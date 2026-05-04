@@ -1,74 +1,43 @@
-import csv
-import sys
-import time
-import logging
 import argparse
+import csv
+import logging
+import sys
 from pathlib import Path
 
-import pandas as pd
 import networkit as nk
+import pandas as pd
+
+from pipeline_common import standard_setup, timed
 
 
 def main(args):
     global quiet
 
     edgelist = args.edgelist
-    output_dir = Path(args.output_directory)
+    output_dir = standard_setup(args.output_directory)
     k = args.kvalue
     quiet = args.quiet
 
-    # ===========
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        filename=output_dir / "run.log",
-        filemode="w",
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-    )
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
-    # ===========
+    with timed("load_network"):
+        logging.info(f"Reading edgelist from {edgelist}...")
+        df = pd.read_csv(edgelist)
+        unique_nodes = pd.unique(df[["source", "target"]].values.ravel("K"))
+        node_map = {name: i for i, name in enumerate(unique_nodes)}
+        inverted_node_id_map = {i: name for name, i in node_map.items()}
 
-    start = time.perf_counter()
+        graph1 = nk.Graph(n=len(unique_nodes), weighted=False, directed=True)
+        for row in df.itertuples(index=False):
+            graph1.addEdge(node_map[row.source], node_map[row.target])
 
-    # Reading the edgelist using Pandas
-    logging.info(f"Reading edgelist from {edgelist}...")
-    df = pd.read_csv(edgelist)
+        graph, node_id_dict = format_graph(graph1)
 
-    # Map string IDs to integer IDs
-    unique_nodes = pd.unique(df[["source", "target"]].values.ravel("K"))
-    node_map = {name: i for i, name in enumerate(unique_nodes)}
-    inverted_node_id_map = {i: name for name, i in node_map.items()}
+    with timed("ikc_run"):
+        clusters = iterative_k_core_decomposition_MCS_ES(graph, k, node_id_dict)
 
-    # Create Networkit graph
-    graph1 = nk.Graph(n=len(unique_nodes), weighted=False, directed=True)
-    for row in df.itertuples(index=False):
-        graph1.addEdge(node_map[row.source], node_map[row.target])
-
-    # Format graph (removes self loops, handles weights if necessary)
-    graph, node_id_dict = format_graph(graph1)
-
-    elapsed = time.perf_counter() - start
-    logging.info(f"[TIME] Loading network: {elapsed}")
-
-    # ===========
-
-    start = time.perf_counter()
-
-    clusters = iterative_k_core_decomposition_MCS_ES(graph, k, node_id_dict)
-
-    elapsed = time.perf_counter() - start
-    logging.info(f"[TIME] Running IKC algorithm: {elapsed}")
-
-    # ===========
-
-    start = time.perf_counter()
-
-    print_clusters(clusters, output_dir, inverted_node_id_map)
-
-    elapsed = time.perf_counter() - start
-    logging.info(f"[TIME] Saving results: {elapsed}")
+    with timed("save_results"):
+        print_clusters(clusters, output_dir, inverted_node_id_map)
 
 
 def print_clusters(clusters, out_dir, inverted_node_id_map):

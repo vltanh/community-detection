@@ -39,17 +39,10 @@ def state_sh(shared_dir):
 
 
 @pytest.fixture(scope="session")
-def cd_fixture_dir(repo_root):
-    """Path to the 32-node specialized fixture (CSV mirror of comdet/js/fixture.js)."""
-    return repo_root / "examples" / "cd_fixture"
-
-
-@pytest.fixture(scope="session")
-def dnc_edgelist():
-    """Path to the dnc.csv fixture in the NG examples tree."""
+def dnc_edgelist(repo_root):
+    """Path to the dnc.csv copy under the in-repo examples tree."""
     return (
-        Path(__file__).resolve().parent.parent.parent
-        / "network-generation"
+        repo_root
         / "examples"
         / "input"
         / "empirical_networks"

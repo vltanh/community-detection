@@ -2,8 +2,8 @@
 #
 # CM (Connectivity Modifier) post-proc wrapper. Invokes the
 # constrained_clustering CM subcommand which iteratively mincuts +
-# re-runs leiden on each disconnected piece until well-connected.
-# Only Leiden (cpm + mod) is wired today.
+# re-clusters each disconnected piece until well-connected.
+# Supported base algos: leiden-cpm, leiden-mod, louvain (modularity).
 
 set -u
 
@@ -51,8 +51,8 @@ if [ -z "${INPUT_EDGELIST}" ] || [ -z "${BASE_COM}" ] || [ -z "${OUTPUT_DIR}" ] 
 fi
 
 case "${BASE_ALGO}" in
-    leiden-cpm|leiden-mod) ;;
-    *) echo "Error [cm/pipeline]: --base-algo must be leiden-cpm or leiden-mod (got ${BASE_ALGO})." >&2
+    leiden-cpm|leiden-mod|louvain) ;;
+    *) echo "Error [cm/pipeline]: --base-algo must be leiden-cpm, leiden-mod, or louvain (got ${BASE_ALGO})." >&2
        exit 2 ;;
 esac
 

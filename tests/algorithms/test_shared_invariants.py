@@ -28,12 +28,22 @@ def _env():
 
 
 @pytest.fixture(scope="module")
-def all_algo_outputs(repo_root, tmp_path_factory, cd_fixture_dir):
-    """Run every base algo once on cd_fixture, return {algo: output_dir}."""
+def all_algo_outputs(repo_root, tmp_path_factory, dnc_edgelist):
+    """Run every base algo once on dnc, return {algo: output_dir}."""
     out_root = tmp_path_factory.mktemp("invariants")
     algos = [
         "leiden-mod",
         "leiden-cpm-0.5",
+        "louvain-mod",
+        "louvain-zahn",
+        "louvain-owzad-0.5",
+        "louvain-goldberg",
+        "louvain-condora",
+        "louvain-devind",
+        "louvain-devuni",
+        "louvain-dp",
+        "louvain-shimalik-1",
+        "louvain-balmod",
         "infomap",
         "ikc-3",
         "sbm-flat-dc",
@@ -48,14 +58,14 @@ def all_algo_outputs(repo_root, tmp_path_factory, cd_fixture_dir):
             [
                 "bash", str(repo_root / "run_cd.sh"),
                 "--algo", algo,
-                "--input-edgelist", str(cd_fixture_dir / "edge.csv"),
+                "--input-edgelist", str(dnc_edgelist),
                 "--output-dir", str(out_root),
-                "--network", "cd_fixture",
+                "--network", "dnc",
             ],
             capture_output=True, text=True, env=_env(),
         )
         if rc.returncode == 0:
-            results[algo] = out_root / "clusterings" / algo / "cd_fixture" / "com.csv"
+            results[algo] = out_root / "clusterings" / algo / "dnc" / "com.csv"
     return results
 
 

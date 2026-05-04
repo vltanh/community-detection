@@ -1,8 +1,8 @@
 """Dispatcher routing tests: arg parsing, gate matrix, *-best cascade.
 
 Stub the per-algo wrappers so the dispatcher's routing can be tested without
-running real algorithms. Slow tests reuse the real wrappers + the
-cd_fixture; non-slow tests use stubs.
+running real algorithms. Slow tests reuse the real wrappers + the dnc
+edgelist fixture; non-slow tests use stubs.
 """
 
 import os

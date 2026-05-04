@@ -114,6 +114,15 @@ case ${algo} in
         [ "$IS_RUN_WCC" -eq 1 ] && log "Warning: WCC is not supported for Leiden. Disabling."
         IS_RUN_CC=0; IS_RUN_WCC=0
         ;;
+    louvain*)
+        [ "$IS_RUN_CC" -eq 1 ] && log "Warning: CC is not necessary for Louvain. Disabling."
+        [ "$IS_RUN_WCC" -eq 1 ] && log "Warning: WCC is not supported for Louvain. Disabling."
+        IS_RUN_CC=0; IS_RUN_WCC=0
+        if [ "$IS_RUN_CM" -eq 1 ] && [ "${algo}" != "louvain-mod" ]; then
+            log "Warning: CM is only supported for louvain-mod (constrained_clustering binary). Disabling for ${algo}."
+            IS_RUN_CM=0
+        fi
+        ;;
     sbm*)
         [ "$IS_RUN_CM" -eq 1 ] && log "Warning: CM is not supported for SBM. Disabling."
         IS_RUN_CM=0
@@ -278,10 +287,15 @@ leiden_model=""
 leiden_res=""
 ikc_k=""
 sbm_model=""
+louvain_quality=""
+louvain_param=""
 
 if [[ ${algo} == leiden* ]]; then
     leiden_model=$(echo "${algo}" | cut -d'-' -f2)
     [[ ${leiden_model} == cpm ]] && leiden_res=$(echo "${algo}" | cut -d'-' -f3)
+elif [[ ${algo} == louvain* ]]; then
+    louvain_quality=$(echo "${algo}" | cut -d'-' -f2)
+    louvain_param=$(echo "${algo}" | cut -d'-' -f3)
 elif [[ ${algo} == ikc* ]]; then
     ikc_k=$(echo "${algo}" | cut -d'-' -f2)
 elif [[ ${algo} == sbm* ]]; then
@@ -312,6 +326,25 @@ case "${algo}" in
             --model mod \
             --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS}" \
             "${keep_state_arg[@]}"
+        ;;
+    louvain-*)
+        louvain_args=(--input-edgelist "${inp_edge}"
+                      --output-dir "${base_dir}"
+                      --quality "${louvain_quality}"
+                      --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS}")
+        case "${louvain_quality}" in
+            mod|zahn|goldberg|condora|devind|devuni|dp|balmod) ;;
+            owzad)
+                [ -z "${louvain_param}" ] && { log "Error: louvain-owzad-<alpha> requires alpha (e.g. louvain-owzad-0.5)."; exit 1; }
+                louvain_args+=(--alpha "${louvain_param}")
+                ;;
+            shimalik)
+                [ -z "${louvain_param}" ] && { log "Error: louvain-shimalik-<kmin> requires kmin (e.g. louvain-shimalik-1)."; exit 1; }
+                louvain_args+=(--kmin "${louvain_param}")
+                ;;
+            *) log "Unknown louvain quality: ${louvain_quality}"; exit 1 ;;
+        esac
+        bash "${SCRIPT_DIR}/src/louvain/pipeline.sh" "${louvain_args[@]}" "${keep_state_arg[@]}"
         ;;
     infomap)
         bash "${SCRIPT_DIR}/src/infomap/pipeline.sh" \
@@ -450,6 +483,8 @@ run_postproc() {
                 cm_args+=(--base-algo leiden-cpm --base-resolution "${leiden_res}")
             elif [[ ${algo} == leiden-mod ]]; then
                 cm_args+=(--base-algo leiden-mod)
+            elif [[ ${algo} == louvain-mod ]]; then
+                cm_args+=(--base-algo louvain)
             else
                 log "CM not implemented for ${algo}; skipping."
                 return

@@ -1,5 +1,10 @@
 #!/bin/bash
 
+# Determinism env (mirrors network-generation; pins set/dict iteration order
+# and OpenMP thread count for byte-reproducible runs).
+export PYTHONHASHSEED=0
+export OMP_NUM_THREADS=1
+
 # Constants
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 

@@ -11,33 +11,23 @@ from pathlib import Path
 import pandas as pd
 
 
-def setup_logging(log_filepath: Path, level=logging.INFO, extra_handlers=None):
-    """Route root logger to `log_filepath` with timestamps; no console output.
-
-    `level` and `extra_handlers` are reserved for future callers (per plan
-    decision 12: future-proof API surface, additive-only growth). Today's CD
-    pipeline.sh wrappers pass neither; they default to INFO + file-only.
-    """
-    log_filepath = Path(log_filepath)
+def setup_logging(log_filepath: Path):
+    """Route root logger to `log_filepath` with timestamps; no console output."""
     log_filepath.parent.mkdir(parents=True, exist_ok=True)
 
     logger = logging.getLogger()
-    logger.setLevel(level)
+    logger.setLevel(logging.INFO)
 
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
 
     file_handler = logging.FileHandler(log_filepath, mode="w")
-    file_handler.setLevel(level)
+    file_handler.setLevel(logging.INFO)
 
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     file_handler.setFormatter(formatter)
 
     logger.addHandler(file_handler)
-
-    if extra_handlers:
-        for handler in extra_handlers:
-            logger.addHandler(handler)
 
 
 def standard_setup(output_dir):
@@ -55,7 +45,7 @@ def timed(label):
 
 
 def drop_singleton_clusters(com_df):
-    """Shipping guard for com.csv: drop clusters with <= 1 member."""
+    """Shipping guard for com.csv: drop clusters with ≤ 1 member."""
     counts = com_df["cluster_id"].value_counts()
     kept = counts[counts > 1].index
     n_dropped = len(counts) - len(kept)

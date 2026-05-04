@@ -1,26 +1,5 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
+# Python artifacts
+__pycache__
 
-# Run logs + cached state
+# Runtime artifacts
 complete.log
-data/
-audit_dnc_baseline/
-
-# Canonical clones (not vendored; fetched per Phase 0e step 21).
-graph-tool/
-infomap/
-leidenalg/
-libleidenalg/
-VieCut/
-
-# Constrained-clustering build artefacts (binary lives at repo root after
-# easy_build_and_compile.sh; build/ + external_libs/ live under that submodule).
-constrained-clustering/constrained_clustering
-constrained-clustering/build/
-constrained-clustering/external_libs/
-
-# Symlink to vltanh.github.io (separate repo, not a CD artifact).
-vltanh.github.io

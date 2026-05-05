@@ -55,6 +55,7 @@ struct LouvainTraceLevel {
     long double quality_before;
     long double quality_after;
     int passes;
+    std::vector<int> n2c;              // post-level qual->n2c snapshot
 };
 static std::vector<LouvainTraceLevel> gTrace;
 static int gCurrentLevel = -1;
@@ -65,6 +66,14 @@ void louvain_trace_begin_level(int n_nodes) {
     gTrace.back().level = gCurrentLevel;
     gTrace.back().n_nodes = n_nodes;
     gTrace.back().passes = 0;
+}
+void louvain_trace_set_level_n2c(int level, const int* n2c, int n) {
+    for (auto& lv : gTrace) {
+        if (lv.level == level) {
+            lv.n2c.assign(n2c, n2c + n);
+            return;
+        }
+    }
 }
 const std::vector<LouvainTraceLevel>& louvain_trace_get() { return gTrace; }
 

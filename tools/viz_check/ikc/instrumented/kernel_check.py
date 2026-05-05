@@ -30,18 +30,26 @@ def trace_log(*parts):
 
 
 def kc(graph):
-    """[UPSTREAM run_ikc.py:222-261] kc(graph, k=None) variant."""
+    """[UPSTREAM run_ikc.py:222-261] kc(graph, k=None) variant.
+
+    Mirrors canonical: when k=None, sets k=max_k. Returns (None, max_k)
+    only if max_k < k (i.e. max_k < max_k, never). So None happens only
+    when storeNodeOrder yields max_k undefined? No - canonical returns None
+    only when its early-exit triggers; with k=None the early-exit never
+    fires. We must still loop k..max_k populating members.
+    """
     kc_obj = nk.centrality.CoreDecomposition(graph, storeNodeOrder=True)
     kc_obj.run()
     partition = kc_obj.getPartition()
     max_k = kc_obj.maxCoreNumber()
-    kcore_members = []
-    k = max_k
-    while k <= max_k:
-        kcore_members.extend(partition.getMembers(k))
-        k += 1
-    if max_k <= 0:
+    k = max_k  # k=None branch in canonical
+    if max_k < k:
         return None, max_k
+    kcore_members = []
+    kk = k
+    while kk <= max_k:
+        kcore_members.extend(partition.getMembers(kk))
+        kk += 1
     return nk.graphtools.subgraphFromNodes(graph, kcore_members), max_k
 
 
@@ -64,11 +72,32 @@ def orig_id_component(component, inverted_orig):
     return [inverted_orig[n] for n in component]
 
 
-def ikc_traced(graph, k_floor):
+def format_graph(graph1):
+    """[UPSTREAM run_ikc.py:301-328]"""
+    origNodeIdDict = nk.graphtools.getContinuousNodeIds(graph1)
+    invertedOrigNodeIdDict = dict(map(reversed, origNodeIdDict.items()))
+    graph1 = nk.graphtools.getCompactedGraph(graph1, origNodeIdDict)
+    if graph1.isWeighted() is False:
+        weighted = nk.Graph(n=0, weighted=True, directed=True)
+        for _ in graph1.iterNodes():
+            weighted.addNode()
+        for u, v in graph1.iterEdges():
+            if not weighted.hasNode(u):
+                weighted.addNode(u)
+            if not weighted.hasNode(v):
+                weighted.addNode(v)
+            weighted.addEdge(u, v, graph1.degreeIn(u))
+        graph = weighted
+    else:
+        graph = graph1
+    graph.removeSelfLoops()
+    return graph, invertedOrigNodeIdDict
+
+
+def ikc_traced(graph, k_floor, inverted_orig):
     """[UPSTREAM run_ikc.py:81-219] iterative_k_core_decomposition_MCS_ES,
     with [TRACE-IKC] capture per iteration.
     """
-    inverted_orig = {n: n for n in graph.iterNodes()}
     orig_graph = nk.graphtools.subgraphFromNodes(graph, graph.iterNodes())
     L = orig_graph.numberOfEdges()
     singletons = []
@@ -151,19 +180,23 @@ def main():
     trace_log(f"PIPELINE_START edge={edge_csv} k_floor={k_floor}")
 
     df = pd.read_csv(edge_csv)
-    unique_nodes = pd.unique(df[["source", "target"]].values.ravel("K"))
+    # Read first two columns positionally — fixture32 uses node_id1/node_id2,
+    # dnc uses source/target. Canonical run_ikc requires source/target headers.
+    src_col, tgt_col = df.columns[0], df.columns[1]
+    unique_nodes = pd.unique(df[[src_col, tgt_col]].values.ravel("K"))
     node_map = {name: i for i, name in enumerate(unique_nodes)}
     inv_map = {i: name for name, i in node_map.items()}
 
     g1 = nk.Graph(n=len(unique_nodes), weighted=False, directed=True)
     for row in df.itertuples(index=False):
-        g1.addEdge(node_map[row.source], node_map[row.target])
+        g1.addEdge(node_map[getattr(row, src_col)], node_map[getattr(row, tgt_col)])
 
-    final_clusters, iters = ikc_traced(g1, k_floor)
+    graph, inverted_orig = format_graph(g1)
+    final_clusters, iters = ikc_traced(graph, k_floor, inverted_orig)
     trace_log(f"PIPELINE_END iters={len(iters)} clusters={len(final_clusters)}")
 
     # Write CSV (matches run_ikc.print_clusters: skip singleton clusters,
-    # consecutive cluster_ids 0..K-1).
+    # consecutive cluster_ids 0..K-1, orig-name node IDs via inv_map).
     with open(out_csv, "w") as f:
         f.write("node_id,cluster_id\n")
         cid = 0
@@ -171,7 +204,7 @@ def main():
             if len(cluster) <= 1:
                 continue
             for node in cluster:
-                f.write(f"{node},{cid}\n")
+                f.write(f"{inv_map[node]},{cid}\n")
             cid += 1
 
     # Emit JSON trace.

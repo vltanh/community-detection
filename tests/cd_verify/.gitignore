@@ -6,3 +6,21 @@ out_*.csv
 out_*.log
 out_*.hist
 js_*.csv
+
+# tracer + canonical run artifacts (cc / wcc / cm / louvain / leiden / ikc)
+*_canon.csv
+*_canon.log
+*_canon.hist
+*_canon
+*_tracer.csv
+*_tracer.json
+*_tracer.log
+*_js.csv
+*_st_edge.csv
+*_ikc_canon/
+*.trace
+tracer_*.csv
+tracer_*.json
+louvain.bin
+louvain_edge.txt
+louvain_relabel.txt

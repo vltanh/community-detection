@@ -25,3 +25,12 @@ tracer_*.json
 louvain.bin
 louvain_edge.txt
 louvain_relabel.txt
+
+# viecut tracer per-cluster artifacts
+*_viecut.metis
+*_viecut_canon_cactus.graphml
+*_viecut_canon_cut.txt
+*_viecut_canon.log
+*_viecut_tracer_cactus.graphml
+*_viecut_tracer_cut.txt
+*_viecut_tracer.log

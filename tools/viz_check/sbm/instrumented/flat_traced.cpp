@@ -66,6 +66,32 @@ void jsShuffle(std::vector<T>& a, JSRng& rng) {
     }
 }
 
+// Verbatim port of comdet/js/sbm/util.js lgamma. The 7-coefficient
+// Lanczos approximation used by the JS port disagrees with glibc's
+// std::lgamma at ~1 ulp on most non-integer inputs; routing through
+// jsLgamma instead makes S_init + the integer-arg lgamma calls
+// bit-identical between cpp and JS.
+//
+// Residual ~1 ulp dS drift remains: this function calls std::log
+// internally and V8's Math.log + glibc's std::log differ at some
+// inputs (e.g. log(46.5)). Closing that gap fully requires a
+// bit-compatible log port (~150 LOC fdlibm) to one side; the
+// verification tolerates the residual via ABS_dS_TOL=1e-7.
+double jsLgamma(double x) {
+    if (x < 0.5) return std::log(M_PI / std::sin(M_PI * x)) - jsLgamma(1.0 - x);
+    static const double c[9] = {
+        0.99999999999980993,    676.5203681218851,  -1259.1392167224028,
+        771.32342877765313,    -176.61502916214059,  12.507343278686905,
+        -0.13857109526572012,   9.9843695780195716e-6, 1.5056327351493116e-7,
+    };
+    constexpr int g = 7;
+    x -= 1.0;
+    double a = c[0];
+    const double t = x + (double)g + 0.5;
+    for (int i = 1; i < g + 2; ++i) a += c[i] / (x + (double)i);
+    return 0.5 * std::log(2.0 * M_PI) + (x + 0.5) * std::log(t) - t + std::log(a);
+}
+
 // ── Edge / partition I/O ────────────────────────────────────────────
 struct Graph {
     int N;
@@ -215,7 +241,7 @@ struct BlockState {
         useEdgesDl = (mode != Mode::PP);
         usePartitionDl = true;
         useDegreeDl = (mode == Mode::DC);
-        for (int v = 0; v < N; ++v) dcDegreeConst += std::lgamma(g.strength[v] + 1.0);
+        for (int v = 0; v < N; ++v) dcDegreeConst += jsLgamma(g.strength[v] + 1.0);
         rebuildFromMembership();
     }
 
@@ -329,7 +355,7 @@ struct BlockState {
     // log binom(n, k) = lgamma(n+1) - lgamma(k+1) - lgamma(n-k+1).
     double lbinom(double n, double k) const {
         if (n < 0.0 || k < 0.0 || k > n) return 0.0;
-        return std::lgamma(n + 1.0) - std::lgamma(k + 1.0) - std::lgamma(n - k + 1.0);
+        return jsLgamma(n + 1.0) - jsLgamma(k + 1.0) - jsLgamma(n - k + 1.0);
     }
     // logChooseRep(n,k) = log C(n+k-1, k), stars-and-bars.
     double logChooseRep(double n, double k) const {
@@ -349,12 +375,12 @@ struct BlockState {
         double S = 0.0;
         for (size_t i = 0; i < ne.size(); ++i) {
             int r = ne[i];
-            S += (mode == Mode::DC) ? std::lgamma(er[r] + 1.0) : er[r] * safelog((double)nr[r]);
+            S += (mode == Mode::DC) ? jsLgamma(er[r] + 1.0) : er[r] * safelog((double)nr[r]);
             double e_rr_half = ers[(size_t)r * B + r] / 2.0;
-            S -= e_rr_half * LOG2 + std::lgamma(e_rr_half + 1.0);
+            S -= e_rr_half * LOG2 + jsLgamma(e_rr_half + 1.0);
             for (size_t j = i + 1; j < ne.size(); ++j) {
                 int s = ne[j];
-                S -= std::lgamma(ers[(size_t)r * B + s] + 1.0);
+                S -= jsLgamma(ers[(size_t)r * B + s] + 1.0);
             }
         }
         return S;
@@ -365,8 +391,8 @@ struct BlockState {
     }
     double partitionDl() const {
         std::vector<int> ne = sortedNonEmpty();
-        double S = std::lgamma((double)N + 1.0);
-        for (int r : ne) S -= std::lgamma((double)nr[r] + 1.0);
+        double S = jsLgamma((double)N + 1.0);
+        for (int r : ne) S -= jsLgamma((double)nr[r] + 1.0);
         S += lbinom((double)N - 1.0, (double)Bne - 1.0) + std::log((double)N);
         return S;
     }
@@ -424,30 +450,30 @@ struct BlockState {
     // the refactor and the exploration sequence is preserved.
     double subsetEntropy(int r, int s) const {
         double S = 0.0;
-        if (nr[r] > 0) S += (mode == Mode::DC) ? std::lgamma(er[r] + 1.0) : er[r] * safelog((double)nr[r]);
-        if (nr[s] > 0) S += (mode == Mode::DC) ? std::lgamma(er[s] + 1.0) : er[s] * safelog((double)nr[s]);
+        if (nr[r] > 0) S += (mode == Mode::DC) ? jsLgamma(er[r] + 1.0) : er[r] * safelog((double)nr[r]);
+        if (nr[s] > 0) S += (mode == Mode::DC) ? jsLgamma(er[s] + 1.0) : er[s] * safelog((double)nr[s]);
         if (nr[r] > 0) {
             double e_rr_half = ers[(size_t)r * B + r] / 2.0;
-            S -= e_rr_half * LOG2 + std::lgamma(e_rr_half + 1.0);
+            S -= e_rr_half * LOG2 + jsLgamma(e_rr_half + 1.0);
         }
         if (nr[s] > 0 && s != r) {
             double e_ss_half = ers[(size_t)s * B + s] / 2.0;
-            S -= e_ss_half * LOG2 + std::lgamma(e_ss_half + 1.0);
+            S -= e_ss_half * LOG2 + jsLgamma(e_ss_half + 1.0);
         }
-        if (r != s) S -= std::lgamma(ers[(size_t)r * B + s] + 1.0);
+        if (r != s) S -= jsLgamma(ers[(size_t)r * B + s] + 1.0);
         std::vector<int> ne = sortedNonEmpty();
         for (size_t i = 0; i < ne.size(); ++i) {
             int t = ne[i];
             if (t == r || t == s) continue;
-            S -= std::lgamma(ers[(size_t)r * B + t] + 1.0);
-            S -= std::lgamma(ers[(size_t)s * B + t] + 1.0);
+            S -= jsLgamma(ers[(size_t)r * B + t] + 1.0);
+            S -= jsLgamma(ers[(size_t)s * B + t] + 1.0);
         }
         return S;
     }
     double partitionDlSubset(int rA, int sA) const {
         double S = lbinom((double)N - 1.0, (double)Bne - 1.0);
-        if (nr[rA] > 0) S -= std::lgamma((double)nr[rA] + 1.0);
-        if (nr[sA] > 0 && sA != rA) S -= std::lgamma((double)nr[sA] + 1.0);
+        if (nr[rA] > 0) S -= jsLgamma((double)nr[rA] + 1.0);
+        if (nr[sA] > 0 && sA != rA) S -= jsLgamma((double)nr[sA] + 1.0);
         return S;
     }
     double edgesDlSubset() const {

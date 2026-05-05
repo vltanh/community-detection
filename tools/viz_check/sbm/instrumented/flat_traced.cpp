@@ -797,8 +797,17 @@ int runSweep(BlockState& st, JSRng& rng, double beta,
         int pickIdx = rng.intRange(0, (int)cands.size() - 1);
         int toS = cands[pickIdx];
         double dS = (toS == fromR) ? 0.0 : st.virtualMove(v, toS);
-        double acceptU = rng.acceptUniform();
-        bool accept = (dS <= 0.0) || (acceptU < std::exp(-beta * dS));
+        // JS short-circuits accept when dS <= 0 and never draws the
+        // uniform; cpp must mirror exactly so the MT19937 state stays
+        // aligned for any downstream RNG consumer running standalone.
+        double acceptU = 0.0;
+        bool accept;
+        if (dS <= 0.0) {
+            accept = true;
+        } else {
+            acceptU = rng.acceptUniform();
+            accept = (acceptU < std::exp(-beta * dS));
+        }
         bool committed = accept && (toS != fromR);
         if (committed) { st.moveVertex(v, toS); ++sweepAccepted; }
         if (i) o << ",";

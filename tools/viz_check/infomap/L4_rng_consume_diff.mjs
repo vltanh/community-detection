@@ -78,14 +78,18 @@ const countingRng = {
 // So total raw count is APPROXIMATELY equal to N for each
 // getRandomizedIndexVector. Not exact (rejections add 0 or more).
 
-// Drive runInfomapFaithful with the counting rng + capture rawCount
-// snapshots at every callable boundary. Approximate: log total at end
-// + tracer expected total.
+// Boundary log: capture rawCount at each tryMoveEach call boundary.
+const jsBoundary = [];
+function boundaryLog(label, info) {
+  jsBoundary.push({ label, info, rawCount });
+}
+
 const t0 = Date.now();
 const res = COMDET.INFOMAP_CANON.runInfomapFaithful(compactIds, edges, {
   seed: seed,
   rng: countingRng,
   aggregationLimit: 30,
+  boundaryLog: boundaryLog,
 });
 const elapsed = (Date.now() - t0) / 1000;
 
@@ -105,4 +109,33 @@ console.log("");
 console.log("Per-cpp-call expected randInts:");
 for (const c of cppPerCall) {
   console.log(`  call ${c.i}: level=${c.l} fl=${c.fl} visits=${c.n_visits} link_orders=${c.n_link_orders} ~randInts=${c.n_randints_estimate}`);
+}
+
+// JS tryMoveEach call boundaries — pair begin+end to measure draws/call.
+console.log("");
+console.log("JS tryMoveEach boundaries (rawCount delta = randInts consumed):");
+const beginEvents = jsBoundary.filter(b => b.label === "tryMoveEach.begin");
+const endEvents = jsBoundary.filter(b => b.label === "tryMoveEach.end");
+let jsCallIdx = 0;
+for (let k = 0; k < Math.min(beginEvents.length, endEvents.length); k++) {
+  const b = beginEvents[k]; const e = endEvents[k];
+  const draws = e.rawCount - b.rawCount;
+  console.log(`  jsCall ${k}: fl=${b.info.fl} n=${b.info.n} draws=${draws}` +
+    (k < cppPerCall.length ? `  cpp[${k}] ~randInts=${cppPerCall[k].n_randints_estimate} (level=${cppPerCall[k].l}, visits=${cppPerCall[k].n_visits})` : ""));
+}
+console.log(`  JS tryMoveEach calls: ${beginEvents.length}; cpp main calls: ${cppPerCall.length}`);
+
+// Outer driver event sequence (compact view).
+console.log("");
+console.log("JS outer-driver event log (first 30 + last 5):");
+const outerEvents = jsBoundary.filter(b => b.label !== "tryMoveEach.begin" && b.label !== "tryMoveEach.end");
+for (let i = 0; i < Math.min(30, outerEvents.length); i++) {
+  const ev = outerEvents[i];
+  console.log(`  [${ev.rawCount.toString().padStart(5)}] ${ev.label} ${JSON.stringify(ev.info)}`);
+}
+if (outerEvents.length > 30) {
+  console.log(`  ... ${outerEvents.length - 30} more ...`);
+  for (const ev of outerEvents.slice(-5)) {
+    console.log(`  [${ev.rawCount.toString().padStart(5)}] ${ev.label} ${JSON.stringify(ev.info)}`);
+  }
 }

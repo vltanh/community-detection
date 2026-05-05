@@ -59,10 +59,9 @@ for (let i = 0; i < srcs.length; i++) {
 const compactIds = nodes.map((_, i) => i);
 
 const t0 = Date.now();
-const res = COMDET.INFOMAP_CANON.runInfomapCanonical(compactIds, edges, {
+const res = COMDET.INFOMAP_CANON.runInfomapFaithful(compactIds, edges, {
   seed: seed,
   aggregationLimit: 30,
-  tuneIterationLimitOuter: 20,
 });
 const elapsed = (Date.now() - t0) / 1000;
 
@@ -73,19 +72,33 @@ for (let i = 0; i < nodes.length; i++) {
   rows.push([origNumeric, res.finalPartition[i]]);
 }
 
-// Drop singletons + renumber 0..K-1 + sort-by-node_id (mirror canonical_run.py).
-const cnt = new Map();
-for (const [, c] of rows) cnt.set(c, (cnt.get(c) || 0) + 1);
-const filtered = rows.filter(([, c]) => cnt.get(c) > 1);
-const ucs = [...new Set(filtered.map(r => r[1]))].sort((a, b) => a - b);
-const remap = new Map();
-ucs.forEach((c, i) => remap.set(c, i));
-const finalRows = filtered.map(([n, c]) => [n, remap.get(c)]).sort((a, b) => a[0] - b[0]);
+// Drop singletons + renumber 0..K-1 by first-encounter-in-nodeid-order
+// (label-invariant: any two equivalent partitions canonicalize to the same
+// CSV regardless of the kernel's raw cluster ID convention).
+function canonicalize(rows) {
+  const cnt = new Map();
+  for (const [, c] of rows) cnt.set(c, (cnt.get(c) || 0) + 1);
+  const filtered = rows.filter(([, c]) => cnt.get(c) > 1)
+    .sort((a, b) => a[0] - b[0]);
+  const remap = new Map();
+  for (const [, c] of filtered) {
+    if (!remap.has(c)) remap.set(c, remap.size);
+  }
+  let csv = "node_id,cluster_id\n";
+  for (const [n, c] of filtered) csv += `${n},${remap.get(c)}\n`;
+  return csv;
+}
+const jsCsv = canonicalize(rows);
 
-let jsCsv = "node_id,cluster_id\n";
-for (const [n, c] of finalRows) jsCsv += `${n},${c}\n`;
-
-const canonText = fs.readFileSync(canonCsv, "utf-8");
+// Re-canonicalize the canonical CSV the same way (its raw labels follow a
+// different convention; both must be normalized to first-encounter to
+// allow byte-equal comparison).
+const canonRaw = fs.readFileSync(canonCsv, "utf-8").trim().split("\n").slice(1);
+const canonRows = canonRaw.map(ln => {
+  const [n, c] = ln.split(",");
+  return [parseInt(n, 10), parseInt(c, 10)];
+});
+const canonText = canonicalize(canonRows);
 const partitionMatch = (jsCsv === canonText);
 
 // L diff (if stats provided)
@@ -99,7 +112,9 @@ if (statsJson && fs.existsSync(statsJson)) {
 
 console.log(`  seed=${seed}  n=${nodes.length}  m=${edges.length}  elapsed=${elapsed.toFixed(2)}s`);
 console.log(`  JS L=${res.finalL.toFixed(15)}` + (lCanon !== null ? `  L_canon=${lCanon.toFixed(15)}  |ΔL|=${dL.toExponential(3)}` : ""));
-console.log(`  partition match: ${partitionMatch ? "PASS" : "FAIL"} (${finalRows.length} kept rows; canon has ${canonText.trim().split("\n").length - 1})`);
+const jsRowCount = jsCsv.trim().split("\n").length - 1;
+const canonRowCount = canonText.trim().split("\n").length - 1;
+console.log(`  partition match: ${partitionMatch ? "PASS" : "FAIL"} (js=${jsRowCount} kept rows; canon=${canonRowCount})`);
 if (!partitionMatch) {
   // Show first divergent rows.
   const jsLines = jsCsv.trim().split("\n");

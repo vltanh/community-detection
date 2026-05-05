@@ -17,7 +17,7 @@ if [[ ! -d "$IMBUILD" ]]; then
 fi
 
 CXXFLAGS=(-Wall -Wextra -pedantic -Wnon-virtual-dtor -std=c++14 -O3 -fopenmp
-          -ffp-contract=off -fno-unsafe-math-optimizations)
+          -ffp-contract=off -fno-unsafe-math-optimizations -fno-fast-math -ffloat-store -fno-tree-vectorize)
 INC=(-I"$IMSRC" -I"$IMSRC/core")
 
 g++ "${CXXFLAGS[@]}" "${INC[@]}" -c "$HERE/infomap_base_traced.cpp" \

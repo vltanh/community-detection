@@ -64,6 +64,9 @@ struct InfomapTraceVisit {
     bool moved = false;
     unsigned int newM = 0;
     double L_after = 0.0;
+    double L_index = 0.0;
+    double L_module = 0.0;
+    double enterFlow = 0.0;
 };
 struct InfomapTraceCall {
     int level_idx = -1;
@@ -328,7 +331,10 @@ int main(int argc, char** argv) {
             emit_uint_array(v.link_order);
             std::cout << "],\"m\":" << (v.moved ? 1 : 0)
                       << ",\"n\":" << v.newM
-                      << ",\"L\":" << v.L_after << "}";
+                      << ",\"L\":" << v.L_after
+                      << ",\"Li\":" << v.L_index
+                      << ",\"Lm\":" << v.L_module
+                      << ",\"ef\":" << v.enterFlow << "}";
         }
         std::cout << "]}";
     }

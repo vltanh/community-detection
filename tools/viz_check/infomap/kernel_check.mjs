@@ -200,7 +200,7 @@ for (let ci = 0; ci < tracer.calls.length; ci++) {
       isFirstLoop: !!call.fl,
       tuneIterationLimit: 0,
       dirty: dirty,
-      onVisit: (v, moved, newM, L) => decisionLog.push({ v, moved, newM, L }),
+      onVisit: (v, moved, newM, L, Li, Lm, ef) => decisionLog.push({ v, moved, newM, L, Li, Lm, ef }),
       onMoveDeltas: (v, oldM, newM, oDE, oDX, nDE, nDX) =>
         moveDeltaLog.push({ v, oldM, newM, oDE, oDX, nDE, nDX }),
       onPairPull: (v, w, oldM, newM) => { jsPairPulls += 1; },
@@ -233,7 +233,22 @@ for (let ci = 0; ci < tracer.calls.length; ci++) {
     }
     if (dL > 0 && globalThis.__firstDriftReported === undefined) {
       globalThis.__firstDriftReported = true;
-      console.log(`  first-drift call ${ci} (level ${call.l}) visit ${k} v=${cn.v}: ΔL=${dL.toExponential(3)}`);
+      const dLi = Math.abs(js.Li - cn.Li);
+      const dLm = Math.abs(js.Lm - cn.Lm);
+      const dEF = Math.abs(js.ef - cn.ef);
+      console.log(`  first-L-drift call ${ci} (level ${call.l}) visit ${k} v=${cn.v}: ΔL=${dL.toExponential(3)}  ΔL_index=${dLi.toExponential(3)}  ΔL_module=${dLm.toExponential(3)}  ΔenterFlow=${dEF.toExponential(3)}`);
+      console.log(`    js ef=${js.ef.toFixed(20)}  trace ef=${cn.ef.toFixed(20)}`);
+    }
+    if (Math.abs(js.ef - cn.ef) > 0 && globalThis.__firstEfDriftReported === undefined) {
+      globalThis.__firstEfDriftReported = true;
+      const dEF = Math.abs(js.ef - cn.ef);
+      console.log(`  first-EF-drift call ${ci} (level ${call.l}) visit ${k} v=${cn.v}: ΔenterFlow=${dEF.toExponential(3)}  js=${js.ef.toFixed(20)}  trace=${cn.ef.toFixed(20)}`);
+      // Dump previous visit's enterFlow on both sides.
+      if (k > 0) {
+        const prev_js = decisionLog[k - 1];
+        const prev_cn = call.visits[k - 1];
+        console.log(`    prev visit (${k-1}, v=${prev_cn.v}): js.ef=${prev_js.ef.toFixed(20)}  trace.ef=${prev_cn.ef.toFixed(20)}  match=${prev_js.ef === prev_cn.ef}`);
+      }
     }
     levelVisitCount += 1;
     totalVisits += 1;

@@ -14,6 +14,13 @@
 // no-ops; every plogp call inlined into our compilation unit reduces
 // to `p * (std::log(p) * LOG2E)`, matching JS's plogp bit-for-bit.
 #include "infomath_traced.h"
+// Same trick for MapEquation.h: hijack MAPEQUATION_H_ guard so
+// MemMapEquation.h / BiasedMapEquation.h / MetaMapEquation.h's
+// transitive #include of "MapEquation.h" picks up our forked version
+// instead of the canonical. The fork replaces the running enterFlow
+// accumulator with a sum-from-scratch, eliminating 1 ULP drift vs
+// JS replay over multi-hundred-move trajectories.
+#include "map_equation_traced.h"
 
 #include "InfomapBase.h"
 #include "InfomapConfig.h"
@@ -127,6 +134,9 @@ struct InfomapTraceVisit {
   bool moved = false;
   unsigned int newM = 0;
   double L_after = 0.0;
+  double L_index = 0.0;
+  double L_module = 0.0;
+  double enterFlow = 0.0;
 };
 
 struct InfomapTraceCall {
@@ -239,7 +249,9 @@ void traceCallBegin(InfomapBase& /*base*/,
 void traceVisitAfter(InfomapBase& base,
                      unsigned int v_active_id,
                      const std::vector<unsigned int>& linkOrder,
-                     bool moved, unsigned int newM)
+                     bool moved, unsigned int newM,
+                     double L_index, double L_module,
+                     double enterFlow)
 {
   if (g_infomap_trace.calls.empty()) return;
   auto& call = g_infomap_trace.calls.back();
@@ -249,6 +261,9 @@ void traceVisitAfter(InfomapBase& base,
   vt.moved = moved;
   vt.newM = newM;
   vt.L_after = base.getCodelength();
+  vt.L_index = L_index;
+  vt.L_module = L_module;
+  vt.enterFlow = enterFlow;
   call.visits.push_back(std::move(vt));
 }
 

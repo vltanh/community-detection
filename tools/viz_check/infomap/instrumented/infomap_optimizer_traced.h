@@ -22,6 +22,20 @@
 
 namespace infomap {
 
+// Probe MapEquation's protected `enterFlow` accumulator from outside
+// the class. MapEquation has a virtual destructor (8-byte vtable
+// pointer at offset 0), then three public doubles (codelength,
+// indexCodelength, moduleCodelength), four protected doubles
+// (nodeFlow_log_nodeFlow, flow_log_flow, exit_log_exit, enter_log_enter),
+// and enterFlow at relative offset vtable + 7*8 = 8 + 56 = 64 bytes.
+// Single inheritance keeps the base subobject at offset 0, so this
+// works for every derived MapEquation specialization.
+template <typename Obj>
+inline double probeEnterFlow(const Obj& obj) {
+  return *reinterpret_cast<const double*>(
+      reinterpret_cast<const char*>(&obj) + sizeof(void*) + 7 * sizeof(double));
+}
+
 // Per-move trace + per-level seed snapshots written by infomap_base_traced.cpp.
 // Hooks in initPartition / moveNodeToPredefinedModule below call these.
 extern void traceBeginLevel(InfomapBase& base, bool is_main);
@@ -35,7 +49,9 @@ extern void traceCallBegin(InfomapBase& base,
 extern void traceVisitAfter(InfomapBase& base,
                              unsigned int v_active_id,
                              const std::vector<unsigned int>& linkOrder,
-                             bool moved, unsigned int newM);
+                             bool moved, unsigned int newM,
+                             double L_index, double L_module,
+                             double enterFlow);
 extern void tracePredefinedModules(
     InfomapBase& base, const std::vector<unsigned int>& modules);
 }
@@ -345,7 +361,9 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
     if (!current.dirty) {
       // [TRACE-IM] skipped pre-randomization: dirty bit unset.
       traceVisitAfter(*m_infomap, nodeEnumeration[i],
-                      std::vector<unsigned int>(), false, current.index);
+                      std::vector<unsigned int>(), false, current.index,
+                      m_objective.indexCodelength, m_objective.moduleCodelength,
+                      probeEnterFlow(m_objective));
       continue;
     }
 
@@ -353,7 +371,9 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
     if (m_moduleMembers[current.index] > 1 && m_infomap->isFirstLoop() && m_infomap->tuneIterationLimit != 1) {
       // [TRACE-IM] skipped pre-randomization: first-loop guard fired.
       traceVisitAfter(*m_infomap, nodeEnumeration[i],
-                      std::vector<unsigned int>(), false, current.index);
+                      std::vector<unsigned int>(), false, current.index,
+                      m_objective.indexCodelength, m_objective.moduleCodelength,
+                      probeEnterFlow(m_objective));
       continue;
     }
 
@@ -511,12 +531,16 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
       // [TRACE-IM] visit ended with a move (compound L_after captures
       // both the primary move + any single-pair pull-along).
       traceVisitAfter(*m_infomap, nodeEnumeration[i], moduleEnumeration,
-                      true, bestModuleIndex);
+                      true, bestModuleIndex,
+                      m_objective.indexCodelength, m_objective.moduleCodelength,
+                      probeEnterFlow(m_objective));
     } else {
       current.dirty = false;
       // [TRACE-IM] visit evaluated all candidates + decided to stay.
       traceVisitAfter(*m_infomap, nodeEnumeration[i], moduleEnumeration,
-                      false, current.index);
+                      false, current.index,
+                      m_objective.indexCodelength, m_objective.moduleCodelength,
+                      probeEnterFlow(m_objective));
     }
   }
 

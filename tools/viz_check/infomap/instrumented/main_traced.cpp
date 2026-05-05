@@ -31,10 +31,49 @@ struct InfomapTraceStage {
     unsigned int num_top_modules = 0;
     std::vector<unsigned int> leaf_to_top;
 };
+struct InfomapTraceLevel {
+    bool is_main = true;
+    std::vector<unsigned int> predefined_modules;
+    unsigned int active_n = 0;
+    std::vector<unsigned int> leaf_to_active;
+    std::vector<double> init_flow;
+    std::vector<double> init_enter;
+    std::vector<double> init_exit;
+    double init_L = 0.0;
+    double init_L_index = 0.0;
+    double init_L_module = 0.0;
+};
+struct InfomapTraceMove {
+    int level_idx = -1;
+    unsigned int v = 0;
+    unsigned int oldM = 0;
+    unsigned int newM = 0;
+    double oldDeltaEnter = 0.0;
+    double oldDeltaExit = 0.0;
+    double newDeltaEnter = 0.0;
+    double newDeltaExit = 0.0;
+    double L_after = 0.0;
+};
+struct InfomapTraceVisit {
+    unsigned int v = 0;
+    std::vector<unsigned int> link_order;
+    bool moved = false;
+    unsigned int newM = 0;
+    double L_after = 0.0;
+};
+struct InfomapTraceCall {
+    int level_idx = -1;
+    bool is_first_loop = true;
+    std::vector<unsigned int> visit_order;
+    std::vector<InfomapTraceVisit> visits;
+};
 struct InfomapTrace {
     double L_final = 0.0;
     unsigned int num_leaf_nodes = 0;
     std::vector<InfomapTraceStage> stages;
+    std::vector<InfomapTraceLevel> levels;
+    std::vector<InfomapTraceMove> moves;
+    std::vector<InfomapTraceCall> calls;
 };
 extern InfomapTrace& getInfomapTrace();
 extern void resetInfomapTrace();
@@ -214,11 +253,89 @@ int main(int argc, char** argv) {
         }
         std::cout << "]}";
     }
+    std::cout << "\n  ],\n";
+
+    auto emit_double_array = [](const std::vector<double>& v) {
+        for (size_t i = 0; i < v.size(); i++) {
+            if (i) std::cout << ",";
+            std::cout << v[i];
+        }
+    };
+    auto emit_uint_array = [](const std::vector<unsigned int>& v) {
+        for (size_t i = 0; i < v.size(); i++) {
+            if (i) std::cout << ",";
+            std::cout << v[i];
+        }
+    };
+
+    std::cout << "  \"levels\": [\n";
+    for (size_t li = 0; li < trace.levels.size(); li++) {
+        const auto& l = trace.levels[li];
+        if (li) std::cout << ",\n";
+        std::cout << "    {\"is_main\":" << (l.is_main ? "true" : "false")
+                  << ",\"active_n\":" << l.active_n
+                  << ",\"init_L\":" << l.init_L
+                  << ",\"init_L_index\":" << l.init_L_index
+                  << ",\"init_L_module\":" << l.init_L_module
+                  << ",\"leaf_to_active\":[";
+        emit_uint_array(l.leaf_to_active);
+        std::cout << "],\"init_flow\":[";
+        emit_double_array(l.init_flow);
+        std::cout << "],\"init_enter\":[";
+        emit_double_array(l.init_enter);
+        std::cout << "],\"init_exit\":[";
+        emit_double_array(l.init_exit);
+        std::cout << "],\"predef\":[";
+        emit_uint_array(l.predefined_modules);
+        std::cout << "]}";
+    }
+    std::cout << "\n  ],\n";
+
+    std::cout << "  \"moves\": [\n";
+    for (size_t mi = 0; mi < trace.moves.size(); mi++) {
+        const auto& m = trace.moves[mi];
+        if (mi) std::cout << ",\n";
+        std::cout << "    {\"l\":" << m.level_idx
+                  << ",\"v\":" << m.v
+                  << ",\"o\":" << m.oldM
+                  << ",\"n\":" << m.newM
+                  << ",\"oDE\":" << m.oldDeltaEnter
+                  << ",\"oDX\":" << m.oldDeltaExit
+                  << ",\"nDE\":" << m.newDeltaEnter
+                  << ",\"nDX\":" << m.newDeltaExit
+                  << ",\"L\":" << m.L_after << "}";
+    }
+    std::cout << "\n  ],\n";
+
+    std::cout << "  \"calls\": [\n";
+    for (size_t ci = 0; ci < trace.calls.size(); ci++) {
+        const auto& c = trace.calls[ci];
+        if (ci) std::cout << ",\n";
+        std::cout << "    {\"l\":" << c.level_idx
+                  << ",\"fl\":" << (c.is_first_loop ? 1 : 0)
+                  << ",\"vo\":[";
+        emit_uint_array(c.visit_order);
+        std::cout << "],\"visits\":[";
+        for (size_t vi = 0; vi < c.visits.size(); vi++) {
+            const auto& v = c.visits[vi];
+            if (vi) std::cout << ",";
+            std::cout << "{\"v\":" << v.v
+                      << ",\"lo\":[";
+            emit_uint_array(v.link_order);
+            std::cout << "],\"m\":" << (v.moved ? 1 : 0)
+                      << ",\"n\":" << v.newM
+                      << ",\"L\":" << v.L_after << "}";
+        }
+        std::cout << "]}";
+    }
     std::cout << "\n  ]\n}\n";
     std::cout.flush();
     std::fflush(stdout);
 
-    std::fprintf(stderr, "[TRACE-IM] L_canon=%.17g num_modules=%u stages=%zu\n",
-                 L_canon, im.numTopModules(), trace.stages.size());
+    std::fprintf(stderr,
+                 "[TRACE-IM] L_canon=%.17g num_modules=%u stages=%zu levels=%zu moves=%zu calls=%zu\n",
+                 L_canon, im.numTopModules(), trace.stages.size(),
+                 trace.levels.size(), trace.moves.size(),
+                 trace.calls.size());
     return 0;
 }

@@ -14,7 +14,10 @@
 #include "BiasedMapEquation.h"
 #include "MemMapEquation.h"
 #include "MetaMapEquation.h"
-#include "InfomapOptimizer.h"
+// Forked optimizer header (instrumented/) instead of canonical
+// InfomapOptimizer.h: adds [TRACE-IM] hooks at every successful move
+// + at every initPartition (level seed snapshot).
+#include "infomap_optimizer_traced.h"
 #include "../io/SafeFile.h"
 #include "../utils/FileURI.h"
 #include "../utils/FlowCalculator.h"
@@ -51,16 +54,202 @@ struct InfomapTraceStage {
   std::vector<unsigned int> leaf_to_top;  // size = numLeafNodes; entries = topModule index in [0, numTopModules)
 };
 
+struct InfomapTraceLevel {
+  // Each level == one initPartition + optimizeActiveNetwork (or
+  // moveActiveNodesToPredefinedModules) chain. Captured at the
+  // initPartition boundary inside InfomapOptimizer::initPartition.
+  bool is_main = true;          // false for sub-Infomap (coarseTune
+                                // recursively spawns inner instances)
+  // Predefined-modules vector passed to moveActiveNodesToPredefinedModules
+  // at this level (captured BEFORE the moves are applied). Empty if
+  // no moveActiveNodes call happened. JS replay applies this vector
+  // via applyMembership between makePartition (singleton) and the
+  // level's first tryMoveEach.
+  std::vector<unsigned int> predefined_modules;
+  unsigned int active_n = 0;
+  // For each leaf compact-id, which active-node it lives under at the
+  // start of this level (i.e. leaf's nearest ancestor in the active
+  // network). For leaf-level levels this equals identity; for super-
+  // levels it folds leaves into existing modules.
+  std::vector<unsigned int> leaf_to_active;
+  // Per active-node initial flow data (pre-move). Mirrors
+  // m_moduleFlowData[i] = node.data after initPartition assigns
+  // node.index = i and copies flow into m_moduleFlowData.
+  std::vector<double> init_flow;
+  std::vector<double> init_enter;
+  std::vector<double> init_exit;
+  // L (codelength) right after initPartition completes; used by JS
+  // replay to verify its initial state matches.
+  double init_L = 0.0;
+  double init_L_index = 0.0;
+  double init_L_module = 0.0;
+};
+
+struct InfomapTraceMove {
+  // Index into InfomapTrace.levels.
+  int level_idx = -1;
+  // Stable active-id of the moving node (== its level-start
+  // m_activeNetwork[i] position; canonical's node.index right after
+  // initPartition is the same value, and traceMoveAfter looks it up
+  // via the level-start pointer table).
+  unsigned int v = 0;
+  unsigned int oldM = 0;
+  unsigned int newM = 0;
+  double oldDeltaEnter = 0.0;
+  double oldDeltaExit = 0.0;
+  double newDeltaEnter = 0.0;
+  double newDeltaExit = 0.0;
+  // Codelength right after the move's updateCodelengthOnMovingNode call.
+  double L_after = 0.0;
+};
+
+// Random-oracle trace: per-tryMoveEachNodeIntoBestModule call dumps
+// the post-randomization visit order + each visit's post-randomization
+// module-link order + the deterministic decision (moved, newM, post-L)
+// the canonical optimizer arrived at given that random sequence. JS
+// replay injects visit_order + link_order into its own optimizer + must
+// arrive at byte-equal (moved, newM, L_after) for every visit; that
+// validates JS's diffMove + best-module pick + tie-break + dirty bit +
+// first-loop guard + single-pair pull-along byte-for-byte.
+struct InfomapTraceVisit {
+  unsigned int v = 0;                  // active-id (== position in
+                                        // level's m_activeNetwork)
+  std::vector<unsigned int> link_order; // empty if visit was skipped
+                                        // pre-link-randomization
+  bool moved = false;
+  unsigned int newM = 0;
+  double L_after = 0.0;
+};
+
+struct InfomapTraceCall {
+  int level_idx = -1;                  // index into trace.levels
+  bool is_first_loop = true;            // canonical's m_infomap->isFirstLoop()
+                                        // value at the start of this call;
+                                        // controls tryMoveEach's first-loop guard
+  std::vector<unsigned int> visit_order;
+  std::vector<InfomapTraceVisit> visits;
+};
+
 struct InfomapTrace {
   double L_final = 0.0;
   unsigned int num_leaf_nodes = 0;
   std::vector<InfomapTraceStage> stages;
+  std::vector<InfomapTraceLevel> levels;
+  std::vector<InfomapTraceMove> moves;
+  std::vector<InfomapTraceCall> calls;
 };
 
 static InfomapTrace g_infomap_trace;
+// Per-level: pointer table assigning a stable active-id to each
+// active-network entry at this level's initPartition boundary.
+// Used by traceMoveAfter to recover the stable id of `current`.
+static std::map<InfoNode*, unsigned int> g_level_active_id;
 
 InfomapTrace& getInfomapTrace() { return g_infomap_trace; }
-void resetInfomapTrace() { g_infomap_trace = InfomapTrace(); }
+void resetInfomapTrace() {
+  g_infomap_trace = InfomapTrace();
+  g_level_active_id.clear();
+}
+
+void traceBeginLevel(InfomapBase& base, bool is_main)
+{
+  InfomapTraceLevel lvl;
+  lvl.is_main = is_main;
+  auto& net = base.activeNetwork();
+  lvl.active_n = static_cast<unsigned int>(net.size());
+  lvl.init_flow.resize(lvl.active_n);
+  lvl.init_enter.resize(lvl.active_n);
+  lvl.init_exit.resize(lvl.active_n);
+  g_level_active_id.clear();
+  for (unsigned int i = 0; i < lvl.active_n; ++i) {
+    InfoNode* n = net[i];
+    g_level_active_id[n] = i;
+    lvl.init_flow[i]  = n->data.flow;
+    lvl.init_enter[i] = n->data.enterFlow;
+    lvl.init_exit[i]  = n->data.exitFlow;
+  }
+
+  // Walk leaves; for each leaf find its active ancestor + write the
+  // active-id under the leaf's compact stateId (canonical's m_nodes
+  // is keyed by id; addLink(compact_u, compact_v) used compact ids
+  // 0..n-1 in pandas pd.unique('K') order, so stateId == compact id).
+  // leaf_idx is NOT used because iterLeafNodes walks the post-
+  // consolidate tree depth-first which groups leaves by super-module
+  // — the iteration order is no longer compact-id order.
+  lvl.leaf_to_active.assign(base.numLeafNodes(), 0u);
+  for (auto it = base.iterLeafNodes(); !it.isEnd(); ++it) {
+    InfoNode* leaf = &(*it);
+    InfoNode* anc = leaf;
+    unsigned int aid = 0;
+    while (anc != nullptr) {
+      auto found = g_level_active_id.find(anc);
+      if (found != g_level_active_id.end()) { aid = found->second; break; }
+      anc = anc->parent;
+    }
+    if (leaf->stateId < lvl.leaf_to_active.size()) {
+      lvl.leaf_to_active[leaf->stateId] = aid;
+    }
+  }
+
+  lvl.init_L        = base.getCodelength();
+  lvl.init_L_index  = base.getIndexCodelength();
+  lvl.init_L_module = base.getModuleCodelength();
+
+  g_infomap_trace.levels.push_back(std::move(lvl));
+}
+
+void traceMoveAfter(InfomapBase& base, InfoNode& current,
+                    unsigned int oldM, unsigned int newM,
+                    double oDE, double oDX,
+                    double nDE, double nDX)
+{
+  InfomapTraceMove mv;
+  mv.level_idx = static_cast<int>(g_infomap_trace.levels.size()) - 1;
+  auto found = g_level_active_id.find(&current);
+  mv.v = (found != g_level_active_id.end()) ? found->second : oldM;
+  mv.oldM = oldM;
+  mv.newM = newM;
+  mv.oldDeltaEnter = oDE;
+  mv.oldDeltaExit  = oDX;
+  mv.newDeltaEnter = nDE;
+  mv.newDeltaExit  = nDX;
+  mv.L_after = base.getCodelength();
+  g_infomap_trace.moves.push_back(std::move(mv));
+}
+
+void traceCallBegin(InfomapBase& /*base*/,
+                    const std::vector<unsigned int>& visitOrder,
+                    bool is_first_loop)
+{
+  InfomapTraceCall call;
+  call.level_idx = static_cast<int>(g_infomap_trace.levels.size()) - 1;
+  call.is_first_loop = is_first_loop;
+  call.visit_order = visitOrder;
+  g_infomap_trace.calls.push_back(std::move(call));
+}
+
+void traceVisitAfter(InfomapBase& base,
+                     unsigned int v_active_id,
+                     const std::vector<unsigned int>& linkOrder,
+                     bool moved, unsigned int newM)
+{
+  if (g_infomap_trace.calls.empty()) return;
+  auto& call = g_infomap_trace.calls.back();
+  InfomapTraceVisit vt;
+  vt.v = v_active_id;
+  vt.link_order = linkOrder;
+  vt.moved = moved;
+  vt.newM = newM;
+  vt.L_after = base.getCodelength();
+  call.visits.push_back(std::move(vt));
+}
+
+void tracePredefinedModules(InfomapBase& /*base*/,
+                            const std::vector<unsigned int>& modules)
+{
+  if (g_infomap_trace.levels.empty()) return;
+  g_infomap_trace.levels.back().predefined_modules = modules;
+}
 
 static void traceCaptureStage(InfomapBase& self, const std::string& label)
 {

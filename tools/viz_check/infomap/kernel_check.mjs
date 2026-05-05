@@ -1,20 +1,28 @@
-/* Infomap JS-vs-tracer byte-equal cross-check.
+/* Infomap random-oracle deterministic-core verification.
  *
- * Reads the tracer JSON produced by /tmp/infomap_kernel_check on the
- * canonical edge file and verifies:
- *   (1) JS map-equation on the FINAL stage's leaf_to_top reproduces
- *       the tracer's reported L within 1e-9 (formula byte-equal at
- *       machine epsilon). Intermediate stages are skipped because
- *       canonical's getCodelength returns the SUPER-network codelength
- *       mid-loop, not the leaf-flat L of leaf_to_top.
- *   (2) JS map-equation on the canonical com.csv partition matches
- *       L_canon within 1e-9 (independent formula check).
- *   (3) The JS-canonicalized final partition (drop singletons + ASC
- *       renumber + sort by node_id) matches the canonical com.csv
- *       exactly.
+ * Phase 1: validate JS optimizer's deterministic decisions on the very
+ * first call to tryMoveEachNodeIntoBestModule (= leaf-level, first
+ * sweep, first findTopModulesRepeatedly iteration). The tracer dumps
+ * canonical's:
+ *   - level-0 active-network seed (per-leaf flow/enter/exit)
+ *   - call[0].vo: post-randomization visit_order
+ *   - per-visit lo: post-randomization module-link order (when canonical
+ *     reached the link-randomization step; empty for visits skipped by
+ *     the dirty bit or first-loop guard)
+ *   - per-visit (moved, newM, L_after): canonical's deterministic
+ *     decision given that random sequence
  *
- * Three-leg byte-equal claim: canonical pypi com.csv == tracer com.csv
- * (verified by kernel_check.py diff) AND L_canon == L_js at machine eps.
+ * JS replay constructs the same active-graph from the seed, calls
+ * COMDET.INFOMAP_CANON.tryMoveEach with the visit_order + linkOrders
+ * oracle injected, and per-visit emits its OWN (moved, newM, L_after).
+ * The two streams must agree per visit:
+ *   - (moved, newM) byte-equal — validates JS's diffMove + best-module
+ *     pick + strongest-connected tie-break + dirty bit + first-loop
+ *     guard + single-pair pull-along.
+ *   - L_after within ~1e-9 (modulo log2 ULP between V8 and libm).
+ *
+ * If phase 1 passes we lift to subsequent levels (which need the
+ * multi-level flow alignment work tracked separately).
  *
  * Usage:
  *   node kernel_check.mjs <tracer.json> <canonical.csv>
@@ -29,137 +37,207 @@ if (args.length < 2) {
   console.error("usage: kernel_check.mjs <tracer.json> <canonical.csv>");
   process.exit(2);
 }
-const [tracerJsonPath, canonCsvPath] = args;
+const [tracerJsonPath /*, canonCsvPath */] = args;
 
 globalThis.window = globalThis;
 globalThis.window.COMDET = { FIXTURE: { nodes: [], edges: [], gt: [] } };
 const WEB = path.join(__dirname, "../../../vltanh.github.io/comdet/js");
 await import(path.join(WEB, "louvain/louvain.js"));
-await import(path.join(WEB, "infomap/infomap.js"));
+await import(path.join(WEB, "infomap/infomap_canon.js"));
 
-function loadTracer(p) {
-  return JSON.parse(fs.readFileSync(p, "utf8"));
+const tracer = JSON.parse(fs.readFileSync(tracerJsonPath, "utf8"));
+const nLeaf = tracer.renum_to_orig.length;
+
+// Compute the leaf-level nodeFlow_log_nodeFlow constant once. Canonical's
+// MapEquation::nodeFlow_log_nodeFlow is set by initNetwork over leaf
+// flows and is held constant across super-level findTopModulesRepeatedly
+// iterations. Use level 0's init_flow (== leaf flows) — that's the
+// first level main-Infomap captures, and active_n there equals nLeaf.
+const level0 = tracer.levels.find(l => l.is_main && l.active_n === nLeaf);
+let leafNodeFlowLogNodeFlow = 0;
+{
+  const plogp = COMDET.INFOMAP_CANON.plogp;
+  for (const f of level0.init_flow) leafNodeFlowLogNodeFlow += plogp(f);
 }
 
-function loadCanonCsv(p) {
-  const lines = fs.readFileSync(p, "utf8").trim().split(/\r?\n/);
-  const m = new Map();
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(",");
-    m.set(parseInt(cols[0], 10), parseInt(cols[1], 10));
-  }
-  return m;
-}
+// Build leaf graph (compact ids 0..n-1) using the same flow values
+// canonical's FlowCalculator::calcUndirectedFlow assigns: link.flow =
+// 2 * w / sumWeightedDegree (w == 1, sumWeightedDegree == 2m for our
+// unweighted undirected fixtures).
+const m = tracer.edges.length;
+const sumWeightedDegree = 2 * m;
+const leafLinks = tracer.edges.map(([u, v]) => ({
+  u, v, weight: 1.0, flow: 2.0 / sumWeightedDegree,
+}));
 
-const tracer = loadTracer(tracerJsonPath);
-const canonMem = loadCanonCsv(canonCsvPath);
-
-// Build the JS graph using the SAME compact-id mapping the tracer used
-// (renum_to_orig: compact_idx -> orig_id). This guarantees the JS
-// stationary distribution / mapEquation receive identical structure.
-const renumToOrig = tracer.renum_to_orig.map(x => +x);
-const n = renumToOrig.length;
-// Build edges in compact-id space.
-const edges = tracer.edges; // array of [u_compact, v_compact]
-// JS COMDET.INFOMAP.buildGraph expects an array of arbitrary node ids.
-// Use 0..n-1 as ids and feed the raw compact edges directly.
-const compactIds = [];
-for (let i = 0; i < n; i++) compactIds.push(i);
-const g = COMDET.INFOMAP.buildGraph(compactIds, edges);
-const p = COMDET.INFOMAP.stationary(g);
-
-let failures = 0;
-const eps = 1e-9;
-
-function checkL(label, partition, L_expected) {
-  const L_js = COMDET.INFOMAP.mapEquation(g, p, partition).L;
-  const dL = Math.abs(L_js - L_expected);
-  const status = dL < eps ? "PASS" : "FAIL";
-  if (status === "FAIL") failures += 1;
-  return { L_js, L_expected, dL, status };
-}
-
-console.log("=== Infomap 3-leg byte-equal cross-check ===");
-console.log(`n=${n}  m=${edges.length}  L_canon=${tracer.L_canon}`);
-console.log(`tracer reported ${tracer.stages.length} stages`);
-
-const finalStage = tracer.stages[tracer.stages.length - 1];
-
-// (1) Final-stage check — leaf_to_top is the leaf-flat partition only
-// at the final stage; intermediate stages reflect super-network state
-// inside the optimizer, where getCodelength is computed at a higher
-// aggregation level and isn't comparable to a leaf-flat mapEq.
-if (finalStage.leaf_to_top.length === n) {
-  const r = checkL(finalStage.label, finalStage.leaf_to_top, finalStage.L);
-  console.log(`final stage L_js=${r.L_js.toFixed(12)}  L_trace=${r.L_expected.toFixed(12)}  Δ=${r.dL.toExponential(3)}  ${r.status}`);
-} else {
-  console.log("final stage leaf_to_top length mismatch — SKIP");
-  failures += 1;
-}
-
-// (2) JS L on canonical com.csv partition vs L_canon. Singleton nodes
-// (those dropped from canonical's post-processed CSV) get unique
-// cluster ids offset above the kept-cluster range so they don't merge
-// into kept clusters during the JS mapEq evaluation.
-const canonPart = new Array(n);
-const canonRemap = new Map();
-let nextSing = 0;
-const startSing = canonMem.size + n;
-for (let i = 0; i < n; i++) {
-  const orig = renumToOrig[i];
-  if (canonMem.has(orig)) {
-    const c = canonMem.get(orig);
-    if (!canonRemap.has(c)) canonRemap.set(c, canonRemap.size);
-    canonPart[i] = canonRemap.get(c);
-  } else {
-    canonPart[i] = startSing + (nextSing++);
-  }
-}
-const r1 = checkL("L_canon", canonPart, tracer.L_canon);
-console.log(`L_js on canonical partition = ${r1.L_js.toFixed(12)}  L_canon = ${r1.L_expected.toFixed(12)}  Δ = ${r1.dL.toExponential(3)}  ${r1.status}`);
-
-// (3) JS-canonicalized final partition (drop singletons + ASC renumber +
-// sort by node_id) compared against canonical com.csv membership.
-let mismatch_partition = 0;
-if (finalStage.leaf_to_top.length === n) {
-  // Canonicalize finalStage.leaf_to_top (drop singletons, renumber,
-  // sort by orig_id) and diff against canonical com.csv.
-  const counts = new Map();
-  for (const c of finalStage.leaf_to_top) {
-    counts.set(c, (counts.get(c) || 0) + 1);
-  }
-  const kept = [];
-  for (let i = 0; i < n; i++) {
-    if (counts.get(finalStage.leaf_to_top[i]) > 1) {
-      kept.push([renumToOrig[i], finalStage.leaf_to_top[i]]);
+// Per-level active-graph builder (same as before).
+function buildActiveGraph(level) {
+  const n = level.active_n;
+  const lta = level.leaf_to_active;
+  // Leaf-level: each undirected edge stored ONCE per input order
+  // (canonical's nodeLinkMap[source][target] preserves input source/
+  // target). Super-level: canonical's consolidateModules SORTS
+  // (m1, m2) for undirected, so different leaf-edge orientations
+  // collapse into a single (min, max) super-link. Detect leaf-level
+  // by lta being the identity mapping (active_n == nLeaf and
+  // lta[v] == v).
+  let isLeafLevel = (n === nLeaf);
+  if (isLeafLevel) {
+    for (let v = 0; v < n; v++) {
+      if (lta[v] !== v) { isLeafLevel = false; break; }
     }
   }
-  const ucs = Array.from(new Set(kept.map(r => r[1]))).sort((a, b) => a - b);
-  const remap = new Map();
-  ucs.forEach((c, i) => remap.set(c, i));
-  const renum = kept.map(r => [r[0], remap.get(r[1])]).sort((a, b) => a[0] - b[0]);
-  const tracerMem = new Map();
-  for (const [orig, c] of renum) tracerMem.set(orig, c);
-  // Compare canonMem vs tracerMem; require identical sets and per-node match.
-  if (canonMem.size !== tracerMem.size) {
-    console.log(`partition size mismatch: canon=${canonMem.size} tracer=${tracerMem.size}`);
-    mismatch_partition += 1;
-  } else {
-    for (const [orig, c] of canonMem) {
-      if (tracerMem.get(orig) !== c) { mismatch_partition += 1; break; }
-    }
+  const linkMap = new Map();
+  for (const lk of leafLinks) {
+    let cu = lta[lk.u];
+    let cv = lta[lk.v];
+    if (cu === cv) continue;
+    if (!isLeafLevel && cu > cv) { const t = cu; cu = cv; cv = t; }
+    const key = cu * n + cv;
+    const e = linkMap.get(key);
+    if (e) e.flow += lk.flow;
+    else linkMap.set(key, { u: cu, v: cv, flow: lk.flow });
   }
-}
-if (mismatch_partition === 0) {
-  console.log(`final partition canonical == tracer (post-processed): PASS (${canonMem.size} kept rows)`);
-} else {
-  console.log(`final partition canonical != tracer: FAIL`);
-  failures += 1;
+  const links = Array.from(linkMap.values());
+  // Leaf-level: preserve input encounter order (canonical's std::map
+  // keyed by id sorts both source + target ASC inside source's
+  // nested map, but iteration over nodeLinkMap gives source-ASC).
+  // For super-level we explicitly sort.
+  if (!isLeafLevel) links.sort((a, b) => a.u - b.u || a.v - b.v);
+  else links.sort((a, b) => a.u - b.u || a.v - b.v);
+  const outEdges = Array.from({ length: n }, () => []);
+  const inEdges  = Array.from({ length: n }, () => []);
+  for (const lk of links) {
+    outEdges[lk.u].push(lk);
+    inEdges[lk.v].push(lk);
+  }
+  return {
+    n: n,
+    links: links,
+    outEdges: outEdges,
+    inEdges: inEdges,
+    nodeFlow:  Float64Array.from(level.init_flow),
+    nodeEnter: Float64Array.from(level.init_enter),
+    nodeExit:  Float64Array.from(level.init_exit),
+  };
 }
 
-if (failures) {
-  console.log(`OVERALL: FAIL (${failures})`);
+// Replay every main-Infomap call in trace order. Per level, the first
+// call rebuilds the active-graph + Partition from the level's seed;
+// subsequent calls within the same level reuse the carried partition.
+const PER_VISIT_LEPS = 1e-9;
+let totalVisits = 0;
+let totalMismatches = 0;
+let maxLDiff = 0;
+
+let curLevel = -1;
+let activeG = null;
+let P = null;
+let dirty = null;
+let levelInitMismatch = false;
+let perLevelStats = [];
+let levelPass = true;
+let levelVisitCount = 0;
+let levelMismatchCount = 0;
+
+function flushLevel() {
+  if (curLevel >= 0) {
+    perLevelStats.push({
+      level: curLevel, visits: levelVisitCount, mismatches: levelMismatchCount,
+      pass: levelPass,
+    });
+  }
+}
+
+for (let ci = 0; ci < tracer.calls.length; ci++) {
+  const call = tracer.calls[ci];
+  if (!tracer.levels[call.l].is_main) continue;
+  if (call.l !== curLevel) {
+    flushLevel();
+    curLevel = call.l;
+    levelPass = true;
+    levelVisitCount = 0;
+    levelMismatchCount = 0;
+    const level = tracer.levels[call.l];
+    activeG = buildActiveGraph(level);
+    P = COMDET.INFOMAP_CANON.makePartition(activeG, {
+      nodeFlowLogNodeFlow: leafNodeFlowLogNodeFlow,
+    });
+    // init_L is captured right after singleton initPartition + before
+    // any predefined-modules vector is applied; verify singleton match
+    // first.
+    const initDelta = Math.abs(P.codelength() - level.init_L);
+    if (initDelta > PER_VISIT_LEPS) {
+      console.log(`level ${call.l} init_L mismatch: js=${P.codelength()}  trace=${level.init_L}  Δ=${initDelta.toExponential(3)}`);
+      levelPass = false;
+    }
+    // If this level had a moveActiveNodesToPredefinedModules call
+    // between initPartition and optimizeActiveNetwork (fineTune /
+    // coarseTune do this), apply the predefined-modules vector AFTER
+    // the singleton init_L check and BEFORE the level's tryMoveEach.
+    if (level.predef && level.predef.length === activeG.n) {
+      COMDET.INFOMAP_CANON.applyMembership(P, activeG, level.predef);
+    }
+    dirty = new Int8Array(activeG.n);
+    for (let i = 0; i < activeG.n; i++) dirty[i] = 1;
+  }
+  const linkOrders = call.visits
+    .filter(v => v.lo.length > 0)
+    .map(v => Int32Array.from(v.lo));
+  const decisionLog = [];
+  try {
+    COMDET.INFOMAP_CANON.tryMoveEach(P, activeG, null, {
+      visitOrder: Int32Array.from(call.vo),
+      linkOrders: linkOrders,
+      isFirstLoop: !!call.fl,
+      tuneIterationLimit: 0,
+      dirty: dirty,
+      onVisit: (v, moved, newM, L) => decisionLog.push({ v, moved, newM, L }),
+    });
+  } catch (err) {
+    console.log(`call ${ci} (level ${call.l}, fl=${!!call.fl}, ${call.visits.length} visits) failed: ${err.message}`);
+    console.log(`  visits-so-far in trace: ${decisionLog.length}; current trace visit:`, call.visits[decisionLog.length]);
+    throw err;
+  }
+  const N = call.visits.length;
+  if (decisionLog.length !== N) {
+    console.log(`call ${ci} (level ${call.l}) visit-count mismatch: js=${decisionLog.length}  trace=${N}`);
+    totalMismatches += 1;
+    levelMismatchCount += 1;
+    levelPass = false;
+  }
+  for (let k = 0; k < Math.min(decisionLog.length, N); k++) {
+    const js = decisionLog[k];
+    const cn = call.visits[k];
+    const sameDecision = (js.moved === !!cn.m) && (js.newM === cn.n);
+    const dL = Math.abs(js.L - cn.L);
+    if (dL > maxLDiff) maxLDiff = dL;
+    if (!sameDecision || dL > PER_VISIT_LEPS) {
+      if (totalMismatches < 20) {
+        console.log(`  call ${ci} (level ${call.l}) visit ${k} v=${cn.v}: js={moved=${js.moved}, newM=${js.newM}, L=${js.L}}  trace={moved=${!!cn.m}, newM=${cn.n}, L=${cn.L}}  ΔL=${dL.toExponential(3)}`);
+      }
+      totalMismatches += 1;
+      levelMismatchCount += 1;
+      levelPass = false;
+    }
+    levelVisitCount += 1;
+    totalVisits += 1;
+  }
+}
+flushLevel();
+
+console.log("");
+console.log(`per-level summary:`);
+for (const s of perLevelStats) {
+  console.log(`  level ${String(s.level).padStart(2)}  visits=${String(s.visits).padStart(5)}  mismatches=${String(s.mismatches).padStart(5)}  ${s.pass ? "PASS" : "FAIL"}`);
+}
+console.log(`total visits replayed: ${totalVisits}`);
+console.log(`total mismatches:      ${totalMismatches}`);
+console.log(`per-visit max |ΔL|     ${maxLDiff.toExponential(3)}`);
+
+if (totalMismatches) {
+  console.log("OVERALL: FAIL");
   process.exit(1);
 }
-console.log(`OVERALL: PASS`);
+console.log("OVERALL: PASS (deterministic core byte-equal across every main-Infomap call)");
 process.exit(0);

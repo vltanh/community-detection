@@ -66,19 +66,95 @@ void jsShuffle(std::vector<T>& a, JSRng& rng) {
     }
 }
 
-// Verbatim port of comdet/js/sbm/util.js lgamma. The 7-coefficient
-// Lanczos approximation used by the JS port disagrees with glibc's
-// std::lgamma at ~1 ulp on most non-integer inputs; routing through
-// jsLgamma instead makes S_init + the integer-arg lgamma calls
-// bit-identical between cpp and JS.
+// Port of fdlibm's __ieee754_log (Sun Microsystems 1993, public domain
+// in netlib's fdlibm release). V8's Math.log derives from the same
+// source, so jsLog(x) is bit-IDENTICAL to JS Math.log(x); glibc's
+// std::log differs at ~1 ulp on many inputs (e.g. log(46.5)). Routing
+// every entropy/DL log through jsLog (and every lgamma through
+// jsLgamma below) closes the V8 / glibc cross-impl gap, so cpp + JS
+// produce bit-equal dS values under the proposalOracle replay.
 //
-// Residual ~1 ulp dS drift remains: this function calls std::log
-// internally and V8's Math.log + glibc's std::log differ at some
-// inputs (e.g. log(46.5)). Closing that gap fully requires a
-// bit-compatible log port (~150 LOC fdlibm) to one side; the
-// verification tolerates the residual via ABS_dS_TOL=1e-7.
+// Verified bit-identical vs Math.log over ~94k sampled inputs across
+// [0.5, 5000) step 0.0625 plus a geometric sweep on [1e-6, 1).
+//
+// Source: https://www.netlib.org/fdlibm/e_log.c
+double jsLog(double x) {
+    static constexpr double ln2_hi = 6.93147180369123816490e-01;
+    static constexpr double ln2_lo = 1.90821492927058770002e-10;
+    static constexpr double two54  = 1.80143985094819840000e+16;
+    static constexpr double Lg1 = 6.666666666666735130e-01;
+    static constexpr double Lg2 = 3.999999999940941908e-01;
+    static constexpr double Lg3 = 2.857142874366239149e-01;
+    static constexpr double Lg4 = 2.222219843214978396e-01;
+    static constexpr double Lg5 = 1.818357216161805012e-01;
+    static constexpr double Lg6 = 1.531383769920937332e-01;
+    static constexpr double Lg7 = 1.479819860511658591e-01;
+    static constexpr double zero = 0.0;
+    auto hi_word = [](double v) {
+        uint64_t b; std::memcpy(&b, &v, 8); return (uint32_t)(b >> 32);
+    };
+    auto lo_word = [](double v) {
+        uint64_t b; std::memcpy(&b, &v, 8); return (uint32_t)b;
+    };
+    auto set_hi = [](double& v, uint32_t hi) {
+        uint64_t b; std::memcpy(&b, &v, 8);
+        b = (b & 0xFFFFFFFFULL) | ((uint64_t)hi << 32);
+        std::memcpy(&v, &b, 8);
+    };
+    int32_t hx = (int32_t)hi_word(x);
+    uint32_t lx = lo_word(x);
+    int32_t k = 0;
+    if (hx < 0x00100000) {
+        if (((hx & 0x7fffffff) | (int32_t)lx) == 0) return -two54 / zero;
+        if (hx < 0) return (x - x) / zero;
+        k -= 54; x *= two54;
+        hx = (int32_t)hi_word(x);
+    }
+    if (hx >= 0x7ff00000) return x + x;
+    k += (hx >> 20) - 1023;
+    hx &= 0x000fffff;
+    int32_t i = (hx + 0x95f64) & 0x100000;
+    set_hi(x, (uint32_t)(hx | (i ^ 0x3ff00000)));
+    k += (i >> 20);
+    double f = x - 1.0;
+    double dk, hfsq, s, z, R, w, t1, t2;
+    if ((0x000fffff & (2 + hx)) < 3) {
+        if (f == zero) {
+            if (k == 0) return zero;
+            dk = (double)k; return dk * ln2_hi + dk * ln2_lo;
+        }
+        R = f * f * (0.5 - 0.33333333333333333 * f);
+        if (k == 0) return f - R;
+        dk = (double)k; return dk * ln2_hi - ((R - dk * ln2_lo) - f);
+    }
+    s = f / (2.0 + f);
+    dk = (double)k;
+    z = s * s;
+    i = hx - 0x6147a;
+    w = z * z;
+    int32_t j = 0x6b851 - hx;
+    t1 = w * (Lg2 + w * (Lg4 + w * Lg6));
+    t2 = z * (Lg1 + w * (Lg3 + w * (Lg5 + w * Lg7)));
+    i |= j;
+    R = t2 + t1;
+    if (i > 0) {
+        hfsq = 0.5 * f * f;
+        if (k == 0) return f - (hfsq - s * (hfsq + R));
+        return dk * ln2_hi - ((hfsq - (s * (hfsq + R) + dk * ln2_lo)) - f);
+    } else {
+        if (k == 0) return f - s * (f - R);
+        return dk * ln2_hi - ((s * (f - R) - dk * ln2_lo) - f);
+    }
+}
+
+// Verbatim port of comdet/js/sbm/util.js lgamma. 7-coefficient Lanczos
+// approximation; JS port disagrees with glibc's std::lgamma at ~1 ulp
+// on most non-integer inputs. Routes through jsLog so cpp matches JS
+// bit-for-bit. The reflection branch (x < 0.5) isn't hit by any
+// entropy / DL call in this tracer (every arg comes from `+1` of a
+// nonnegative integer-or-half-integer state value).
 double jsLgamma(double x) {
-    if (x < 0.5) return std::log(M_PI / std::sin(M_PI * x)) - jsLgamma(1.0 - x);
+    if (x < 0.5) return jsLog(M_PI / std::sin(M_PI * x)) - jsLgamma(1.0 - x);
     static const double c[9] = {
         0.99999999999980993,    676.5203681218851,  -1259.1392167224028,
         771.32342877765313,    -176.61502916214059,  12.507343278686905,
@@ -89,7 +165,7 @@ double jsLgamma(double x) {
     double a = c[0];
     const double t = x + (double)g + 0.5;
     for (int i = 1; i < g + 2; ++i) a += c[i] / (x + (double)i);
-    return 0.5 * std::log(2.0 * M_PI) + (x + 0.5) * std::log(t) - t + std::log(a);
+    return 0.5 * jsLog(2.0 * M_PI) + (x + 0.5) * jsLog(t) - t + jsLog(a);
 }
 
 // ── Edge / partition I/O ────────────────────────────────────────────
@@ -350,7 +426,7 @@ struct BlockState {
         b[v] = s;
     }
 
-    inline double safelog(double x) const { return x > 0.0 ? std::log(x) : 0.0; }
+    inline double safelog(double x) const { return x > 0.0 ? jsLog(x) : 0.0; }
 
     // log binom(n, k) = lgamma(n+1) - lgamma(k+1) - lgamma(n-k+1).
     double lbinom(double n, double k) const {
@@ -393,7 +469,7 @@ struct BlockState {
         std::vector<int> ne = sortedNonEmpty();
         double S = jsLgamma((double)N + 1.0);
         for (int r : ne) S -= jsLgamma((double)nr[r] + 1.0);
-        S += lbinom((double)N - 1.0, (double)Bne - 1.0) + std::log((double)N);
+        S += lbinom((double)N - 1.0, (double)Bne - 1.0) + jsLog((double)N);
         return S;
     }
     double degreeDlUniform() const {
@@ -424,7 +500,7 @@ struct BlockState {
         std::vector<int> ne = sortedNonEmpty();
         double Min = 0.0;
         for (int r : ne) Min += (double)nr[r] * (nr[r] - 1) / 2.0;
-        return std::log(std::min(E, Min) + 1.0);
+        return jsLog(std::min(E, Min) + 1.0);
     }
 
     double entropy() const {

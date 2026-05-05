@@ -9,6 +9,6 @@
 # separate Python-side entropy-at-fixed-partition check.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-g++ -std=c++20 -O2 -Wall -Wno-unused-result \
+g++ -std=c++20 -O2 -ffp-contract=off -Wall -Wno-unused-result \
     -o /tmp/sbm_flat_kernel_check "$HERE/flat_traced.cpp"
 echo "built: /tmp/sbm_flat_kernel_check"

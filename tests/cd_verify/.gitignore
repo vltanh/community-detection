@@ -18,6 +18,7 @@ js_*.csv
 *_js.csv
 *_st_edge.csv
 *_ikc_canon/
+*_canon_stats.json
 *.trace
 tracer_*.csv
 tracer_*.json

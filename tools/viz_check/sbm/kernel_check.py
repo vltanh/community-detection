@@ -167,6 +167,10 @@ def main():
                          "(terminates earlier when B becomes 1)")
     ap.add_argument("--no-canonical-check", action="store_true",
                     help="skip the graph-tool entropy-at-fixed-partition leg")
+    ap.add_argument("--graph", default=None,
+                    help="run on a custom (name,edge.csv,com.csv) instead of "
+                         "the standard fixture32+dnc set; format "
+                         "name:edge_path:com_path. Repeatable.")
     args = ap.parse_args()
 
     if args.variant and args.mode:
@@ -184,7 +188,14 @@ def main():
     D.emit_fixture_inputs(REPO, work)
 
     failures = 0
-    for name, edge, com in D.fixture_cases(work):
+    if args.graph:
+        parts = args.graph.split(":")
+        if len(parts) != 3:
+            sys.exit("--graph format: name:edge_path:com_path")
+        cases = [(parts[0], Path(parts[1]).resolve(), Path(parts[2]).resolve())]
+    else:
+        cases = D.fixture_cases(work)
+    for name, edge, com in cases:
         for mode, nested in kernels:
             failures += run_one(name, edge, com, work, variant_label,
                                 mode, nested, args)

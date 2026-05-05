@@ -1,25 +1,23 @@
 /* Infomap JS-vs-tracer byte-equal cross-check.
  *
  * Reads the tracer JSON produced by /tmp/infomap_kernel_check on the
- * canonical edge file, applies the FINAL leaf-to-top membership to a
- * JS Infomap-style partition, and verifies:
- *   (1) JS map-equation evaluated on the canonical partition matches
- *       the canonical-reported codelength within 1e-9 (formula
- *       byte-equal at machine epsilon).
- *   (2) Every per-stage post-partition the tracer captured (init
- *       singleton, findTopModulesRepeatedly_*, fineTune_*,
- *       coarseTune_*, final) reproduces the same JS L within 1e-9 of
- *       the tracer's L (formula match at every state along the
- *       trajectory).
- *   (3) The flat com.csv emitted by the tracer matches the JS-derived
- *       com.csv when canonical's drop-singletons + renumber + sort-by-
- *       node_id post-processing is applied.
+ * canonical edge file and verifies:
+ *   (1) JS map-equation on the FINAL stage's leaf_to_top reproduces
+ *       the tracer's reported L within 1e-9 (formula byte-equal at
+ *       machine epsilon). Intermediate stages are skipped because
+ *       canonical's getCodelength returns the SUPER-network codelength
+ *       mid-loop, not the leaf-flat L of leaf_to_top.
+ *   (2) JS map-equation on the canonical com.csv partition matches
+ *       L_canon within 1e-9 (independent formula check).
+ *   (3) The JS-canonicalized final partition (drop singletons + ASC
+ *       renumber + sort by node_id) matches the canonical com.csv
+ *       exactly.
  *
  * Three-leg byte-equal claim: canonical pypi com.csv == tracer com.csv
- * AND tracer trace == JS replay (formula at every state).
+ * (verified by kernel_check.py diff) AND L_canon == L_js at machine eps.
  *
  * Usage:
- *   node kernel_check.mjs <tracer.json> <canonical.csv> <edge.csv>
+ *   node kernel_check.mjs <tracer.json> <canonical.csv>
  */
 import fs from "fs";
 import path from "path";
@@ -85,31 +83,28 @@ console.log("=== Infomap 3-leg byte-equal cross-check ===");
 console.log(`n=${n}  m=${edges.length}  L_canon=${tracer.L_canon}`);
 console.log(`tracer reported ${tracer.stages.length} stages`);
 
-// (2) Final-stage check — only the FINAL stage compares directly to a
-// flat 2-level codelength. Intermediate stages (after
-// findTopModulesRepeatedly / fineTune / coarseTune mid-loop) hold the
-// partition at a HIGHER aggregation level inside the optimizer, so
-// st.L is the super-network's codelength — not the leaf-flat
-// codelength of leaf_to_top. Comparing those two against each other
-// is a category mismatch. Final stage covers the byte-equal claim.
-const finalStageL = tracer.stages[tracer.stages.length - 1];
-if (finalStageL.leaf_to_top.length === n) {
-  const r = checkL(finalStageL.label, finalStageL.leaf_to_top, finalStageL.L);
+const finalStage = tracer.stages[tracer.stages.length - 1];
+
+// (1) Final-stage check — leaf_to_top is the leaf-flat partition only
+// at the final stage; intermediate stages reflect super-network state
+// inside the optimizer, where getCodelength is computed at a higher
+// aggregation level and isn't comparable to a leaf-flat mapEq.
+if (finalStage.leaf_to_top.length === n) {
+  const r = checkL(finalStage.label, finalStage.leaf_to_top, finalStage.L);
   console.log(`final stage L_js=${r.L_js.toFixed(12)}  L_trace=${r.L_expected.toFixed(12)}  Δ=${r.dL.toExponential(3)}  ${r.status}`);
 } else {
   console.log("final stage leaf_to_top length mismatch — SKIP");
   failures += 1;
 }
 
-// (1) JS L on canonical partition vs L_canon.
-// Build canonical partition as a flat array of size n: compact_idx -> cluster_id.
-// Use canonMem (orig_id -> cluster_id). Map orig -> compact via renumToOrig.
-const origToCompact = new Map();
-renumToOrig.forEach((orig, idx) => origToCompact.set(orig, idx));
+// (2) JS L on canonical com.csv partition vs L_canon. Singleton nodes
+// (those dropped from canonical's post-processed CSV) get unique
+// cluster ids offset above the kept-cluster range so they don't merge
+// into kept clusters during the JS mapEq evaluation.
 const canonPart = new Array(n);
 const canonRemap = new Map();
 let nextSing = 0;
-const startSing = 100000; // big offset so singletons don't collide with cluster ids
+const startSing = canonMem.size + n;
 for (let i = 0; i < n; i++) {
   const orig = renumToOrig[i];
   if (canonMem.has(orig)) {
@@ -123,13 +118,8 @@ for (let i = 0; i < n; i++) {
 const r1 = checkL("L_canon", canonPart, tracer.L_canon);
 console.log(`L_js on canonical partition = ${r1.L_js.toFixed(12)}  L_canon = ${r1.L_expected.toFixed(12)}  Δ = ${r1.dL.toExponential(3)}  ${r1.status}`);
 
-// (3) Tracer com.csv format vs canonical com.csv (canonical has been
-//   drop-singletons + renumber + sort-by-node_id post-processed). The
-//   tracer's main_traced.cpp emits the same post-processing — diff-q
-//   against canonical is done by kernel_check.py. Here, we verify
-//   that JS's tunePartition / final leaf_to_top renumbered the same
-//   way matches the canonical com.csv membership.
-const finalStage = tracer.stages[tracer.stages.length - 1];
+// (3) JS-canonicalized final partition (drop singletons + ASC renumber +
+// sort by node_id) compared against canonical com.csv membership.
 let mismatch_partition = 0;
 if (finalStage.leaf_to_top.length === n) {
   // Canonicalize finalStage.leaf_to_top (drop singletons, renumber,

@@ -52,8 +52,6 @@ struct InfomapTraceStage {
 };
 
 struct InfomapTrace {
-  double L_one_level = 0.0;
-  double L_init_singleton = 0.0;
   double L_final = 0.0;
   unsigned int num_leaf_nodes = 0;
   std::vector<InfomapTraceStage> stages;
@@ -1119,9 +1117,7 @@ void InfomapBase::partition()
   double initialCodelength = m_oneLevelCodelength;
   double oldCodelength = initialCodelength;
 
-  // [TRACE-IM] capture state at start (singleton init from initPartition).
-  g_infomap_trace.L_one_level = m_oneLevelCodelength;
-  g_infomap_trace.L_init_singleton = getCodelength();
+  // [TRACE-IM] capture singleton-init stage.
   g_infomap_trace.num_leaf_nodes = numLeafNodes();
   traceCaptureStage(*this, "init_singleton");
 

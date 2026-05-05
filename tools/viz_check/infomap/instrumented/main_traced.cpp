@@ -18,7 +18,6 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
-#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -33,8 +32,6 @@ struct InfomapTraceStage {
     std::vector<unsigned int> leaf_to_top;
 };
 struct InfomapTrace {
-    double L_one_level = 0.0;
-    double L_init_singleton = 0.0;
     double L_final = 0.0;
     unsigned int num_leaf_nodes = 0;
     std::vector<InfomapTraceStage> stages;
@@ -45,11 +42,9 @@ extern void resetInfomapTrace();
 
 using namespace infomap;
 
-// CSV reader: returns (orig_id_list-in-encounter-order, edge_pairs).
 struct TracerEdgeData {
-    std::vector<unsigned int> orig_ids;          // unique node IDs in input order
-    std::map<unsigned int, unsigned int> id2idx; // orig -> compact
-    std::vector<std::pair<unsigned int, unsigned int>> edges;
+    std::vector<unsigned int> orig_ids;          // unique orig IDs in pandas pd.unique('K') order
+    std::vector<std::pair<unsigned int, unsigned int>> edges; // (compact_u, compact_v)
 };
 
 static TracerEdgeData read_edges(const std::string& path) {
@@ -88,23 +83,17 @@ static TracerEdgeData read_edges(const std::string& path) {
         srcs.push_back(u);
         tgts.push_back(v);
     }
-    // Phase 1: assign indices by src-column order.
-    for (unsigned int u : srcs) {
-        if (d.id2idx.find(u) == d.id2idx.end()) {
-            d.id2idx[u] = d.orig_ids.size();
-            d.orig_ids.push_back(u);
-        }
-    }
-    // Phase 2: assign new indices by tgt-column order.
-    for (unsigned int v : tgts) {
-        if (d.id2idx.find(v) == d.id2idx.end()) {
-            d.id2idx[v] = d.orig_ids.size();
-            d.orig_ids.push_back(v);
-        }
-    }
+    std::map<unsigned int, unsigned int> id2idx;
+    auto intern = [&](unsigned int orig) {
+        auto ins = id2idx.emplace(orig, static_cast<unsigned int>(d.orig_ids.size()));
+        if (ins.second) d.orig_ids.push_back(orig);
+        return ins.first->second;
+    };
+    for (unsigned int u : srcs) intern(u);
+    for (unsigned int v : tgts) intern(v);
     d.edges.reserve(srcs.size());
     for (size_t i = 0; i < srcs.size(); i++) {
-        d.edges.emplace_back(srcs[i], tgts[i]);
+        d.edges.emplace_back(id2idx.at(srcs[i]), id2idx.at(tgts[i]));
     }
     return d;
 }
@@ -131,65 +120,55 @@ int main(int argc, char** argv) {
     resetInfomapTrace();
 
     InfomapWrapper im(args.str());
-    // Add edges using the *compact* node ids (0..n-1) so that the
-    // output module ids are deterministic vs canonical_run.py which
-    // also uses compact ids via its node_map.
+    // Compact ids 0..n-1 so output module ids match canonical_run.py
+    // (same node_map ordering).
     for (const auto& e : ed.edges) {
-        unsigned int u = ed.id2idx.at(e.first);
-        unsigned int v = ed.id2idx.at(e.second);
-        im.addLink(u, v, 1.0);
+        im.addLink(e.first, e.second, 1.0);
     }
     im.run();
 
     auto& trace = getInfomapTrace();
     double L_canon = im.codelength();
 
-    // Build final partition as orig_id -> module_id by walking the leaf
-    // tree (post-partition). Mirrors canonical_run.py's iteration order.
-    std::vector<std::pair<unsigned int, unsigned int>> rows; // (orig_id, module_id)
+    // Walk getModules(1, false) once: build orig_id->module_id rows for
+    // CSV emit + overwrite the final stage's leaf_to_top with canonical's
+    // numbering (= post-consolidatedClusterIndex module index, in
+    // contrast to traceCaptureStage's root-child-iter order which can
+    // differ after fineTune/coarseTune reshuffles).
     auto modules_map = im.getModules(1, false);
-    {
-        for (const auto& kv : modules_map) {
-            unsigned int compact_id = kv.first;
-            unsigned int module_id = kv.second;
-            unsigned int orig = ed.orig_ids[compact_id];
-            rows.emplace_back(orig, module_id);
-        }
+    std::vector<std::pair<unsigned int, unsigned int>> rows;
+    rows.reserve(modules_map.size());
+    InfomapTraceStage* final_stage = nullptr;
+    if (!trace.stages.empty() && trace.stages.back().label == "final"
+            && trace.stages.back().leaf_to_top.size() == ed.orig_ids.size()) {
+        final_stage = &trace.stages.back();
     }
-    // Also store the canonical module_id per compact-leaf-index in the
-    // last (final) trace stage so JS replay can use the SAME numbering
-    // canonical_run.py emits (= getModules(1, false).second pre-ASC-
-    // renumber). Replaces the walk-up assignment from
-    // traceCaptureStage("final"), which uses root child-iter order
-    // (different ordering on multi-level partitions when fineTune /
-    // coarseTune reorder children mid-iteration).
-    if (!trace.stages.empty() && trace.stages.back().label == "final") {
-        auto& last = trace.stages.back();
-        if (last.leaf_to_top.size() == ed.orig_ids.size()) {
-            for (const auto& kv : modules_map) {
-                unsigned int compact_id = kv.first;
-                unsigned int module_id = kv.second;
-                if (compact_id < last.leaf_to_top.size())
-                    last.leaf_to_top[compact_id] = module_id;
-            }
+    std::map<unsigned int, unsigned int> mod_count;
+    for (const auto& kv : modules_map) {
+        unsigned int compact_id = kv.first;
+        unsigned int module_id = kv.second;
+        rows.emplace_back(ed.orig_ids[compact_id], module_id);
+        ++mod_count[module_id];
+        if (final_stage != nullptr && compact_id < final_stage->leaf_to_top.size()) {
+            final_stage->leaf_to_top[compact_id] = module_id;
         }
     }
 
-    // Drop singletons + renumber 0..K-1 + sort by node_id (matches
-    // canonical_run.py's post-processing).
-    std::map<unsigned int, unsigned int> mod_count;
-    for (const auto& r : rows) mod_count[r.second]++;
-    std::vector<std::pair<unsigned int, unsigned int>> kept;
-    for (const auto& r : rows) if (mod_count[r.second] > 1) kept.push_back(r);
-    std::set<unsigned int> uniq_mods;
-    for (const auto& r : kept) uniq_mods.insert(r.second);
+    // Post-process for the CSV: drop singletons + ASC-renumber +
+    // sort-by-node_id to match canonical_run.py.
     std::map<unsigned int, unsigned int> remap;
     {
         unsigned int next = 0;
-        for (unsigned int m : uniq_mods) remap[m] = next++;
+        for (const auto& mc : mod_count) {
+            if (mc.second > 1) remap[mc.first] = next++;
+        }
     }
     std::vector<std::pair<unsigned int, unsigned int>> renumbered;
-    for (const auto& r : kept) renumbered.emplace_back(r.first, remap[r.second]);
+    renumbered.reserve(rows.size());
+    for (const auto& r : rows) {
+        auto it = remap.find(r.second);
+        if (it != remap.end()) renumbered.emplace_back(r.first, it->second);
+    }
     std::sort(renumbered.begin(), renumbered.end());
 
     {
@@ -203,8 +182,6 @@ int main(int argc, char** argv) {
     // Emit trace JSON to stdout.
     std::cout << std::setprecision(17) << "{\n";
     std::cout << "  \"L_canon\": " << L_canon << ",\n";
-    std::cout << "  \"L_one_level\": " << trace.L_one_level << ",\n";
-    std::cout << "  \"L_init_singleton\": " << trace.L_init_singleton << ",\n";
     std::cout << "  \"L_final\": " << trace.L_final << ",\n";
     std::cout << "  \"num_leaf_nodes\": " << trace.num_leaf_nodes << ",\n";
     std::cout << "  \"num_top_modules\": " << im.numTopModules() << ",\n";
@@ -217,8 +194,8 @@ int main(int argc, char** argv) {
     std::cout << "  \"edges\": [";
     for (size_t i = 0; i < ed.edges.size(); i++) {
         if (i) std::cout << ",";
-        std::cout << "[" << ed.id2idx.at(ed.edges[i].first)
-                  << "," << ed.id2idx.at(ed.edges[i].second) << "]";
+        std::cout << "[" << ed.edges[i].first
+                  << "," << ed.edges[i].second << "]";
     }
     std::cout << "],\n";
     std::cout << "  \"stages\": [\n";

@@ -325,7 +325,6 @@ struct BlockState {
     }
 
     inline double safelog(double x) const { return x > 0.0 ? std::log(x) : 0.0; }
-    inline double xlogx(double x) const { return x > 0.0 ? x * std::log(x) : 0.0; }
 
     // log binom(n, k) = lgamma(n+1) - lgamma(k+1) - lgamma(n-k+1).
     double lbinom(double n, double k) const {
@@ -337,14 +336,26 @@ struct BlockState {
         return lbinom(n + k - 1.0, k);
     }
 
+    // Sorted neList prefix - every nonempty-block iteration below uses
+    // this so the entropy/DL terms scan O(Bne) instead of O(B=N).
+    std::vector<int> sortedNonEmpty() const {
+        std::vector<int> a(neList.begin(), neList.begin() + Bne);
+        std::sort(a.begin(), a.end());
+        return a;
+    }
+
     double exactEntropy() const {
+        std::vector<int> ne = sortedNonEmpty();
         double S = 0.0;
-        for (int r = 0; r < B; ++r) {
-            if (nr[r] == 0) continue;
+        for (size_t i = 0; i < ne.size(); ++i) {
+            int r = ne[i];
             S += (mode == Mode::DC) ? std::lgamma(er[r] + 1.0) : er[r] * safelog((double)nr[r]);
             double e_rr_half = ers[(size_t)r * B + r] / 2.0;
             S -= e_rr_half * LOG2 + std::lgamma(e_rr_half + 1.0);
-            for (int s = r + 1; s < B; ++s) S -= std::lgamma(ers[(size_t)r * B + s] + 1.0);
+            for (size_t j = i + 1; j < ne.size(); ++j) {
+                int s = ne[j];
+                S -= std::lgamma(ers[(size_t)r * B + s] + 1.0);
+            }
         }
         return S;
     }
@@ -354,14 +365,14 @@ struct BlockState {
     }
     double partitionDl() const {
         double S = std::lgamma((double)N + 1.0);
-        for (int r = 0; r < B; ++r) if (nr[r] > 0) S -= std::lgamma((double)nr[r] + 1.0);
+        for (int i = 0; i < Bne; ++i) S -= std::lgamma((double)nr[neList[i]] + 1.0);
         S += lbinom((double)N - 1.0, (double)Bne - 1.0) + std::log((double)N);
         return S;
     }
     double degreeDlUniform() const {
         double S = 0.0;
-        for (int r = 0; r < B; ++r) {
-            if (nr[r] == 0) continue;
+        for (int i = 0; i < Bne; ++i) {
+            int r = neList[i];
             S += logChooseRep((double)nr[r], std::round(er[r]));
         }
         return S;
@@ -369,8 +380,8 @@ struct BlockState {
     double ppLikelihood() const {
         double Ein2 = 0.0, Min = 0.0;
         int nTot = 0;
-        for (int r = 0; r < B; ++r) {
-            if (nr[r] == 0) continue;
+        for (int i = 0; i < Bne; ++i) {
+            int r = neList[i];
             Ein2 += ers[(size_t)r * B + r];
             Min += (double)nr[r] * (nr[r] - 1) / 2.0;
             nTot += nr[r];
@@ -386,7 +397,10 @@ struct BlockState {
     }
     double ppEdgesDl() const {
         double Min = 0.0;
-        for (int r = 0; r < B; ++r) if (nr[r] > 0) Min += (double)nr[r] * (nr[r] - 1) / 2.0;
+        for (int i = 0; i < Bne; ++i) {
+            int r = neList[i];
+            Min += (double)nr[r] * (nr[r] - 1) / 2.0;
+        }
         return std::log(std::min(E, Min) + 1.0);
     }
 
@@ -637,6 +651,69 @@ struct JEmit {
     }
 };
 
+template <class T>
+void emitIntArray(std::ostream& o, const T& v) {
+    o << "[";
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) o << ",";
+        o << v[i];
+    }
+    o << "]";
+}
+
+// Run one mcmc sweep on `st`, write the JSON object describing it
+// to `o`, and return the sweep's accepted-move count. Shared between
+// the flat top-level run and the per-level body of runNested so the
+// per-visit emit stays in one place.
+struct SweepHeader { const char* key = nullptr; int value = 0; };
+int runSweep(BlockState& st, JSRng& rng, double beta,
+             std::vector<int>& cands, std::vector<int>& order,
+             JEmit& em, std::ostream& o,
+             const SweepHeader& header = {}) {
+    order.assign(st.N, 0);
+    for (int i = 0; i < st.N; ++i) order[i] = i;
+    jsShuffle(order, rng);
+    o << "{";
+    if (header.key) o << "\"" << header.key << "\":" << header.value << ",";
+    o << "\"visit_order\":";
+    emitIntArray(o, order);
+    o << ",\"S_pre\":";
+    em.writeDouble(st.entropy());
+    o << ",\"visits\":[";
+    int sweepAccepted = 0;
+    for (int i = 0; i < (int)order.size(); ++i) {
+        int v = order[i];
+        int fromR = st.blockOf(v);
+        candidatePool(st, v, cands);
+        int pickIdx = rng.intRange(0, (int)cands.size() - 1);
+        int toS = cands[pickIdx];
+        double dS = (toS == fromR) ? 0.0 : st.virtualMove(v, toS);
+        double acceptU = rng.acceptUniform();
+        bool accept = (dS <= 0.0) || (acceptU < std::exp(-beta * dS));
+        bool committed = accept && (toS != fromR);
+        if (committed) { st.moveVertex(v, toS); ++sweepAccepted; }
+        if (i) o << ",";
+        o << "{\"v\":" << v
+          << ",\"fromR\":" << fromR
+          << ",\"toS\":" << toS
+          << ",\"cands\":";
+        emitIntArray(o, cands);
+        o << ",\"dS\":";
+        em.writeDouble(dS);
+        o << ",\"acceptU\":";
+        em.writeDouble(acceptU);
+        o << ",\"accept\":" << (accept ? "true" : "false")
+          << ",\"moved\":" << (committed ? "true" : "false")
+          << "}";
+    }
+    o << "],\"S_post\":";
+    em.writeDouble(st.entropy());
+    o << ",\"accepted\":" << sweepAccepted
+      << ",\"Bne_post\":" << st.Bne
+      << "}";
+    return sweepAccepted;
+}
+
 }  // namespace
 
 // ── Nested run ──────────────────────────────────────────────────────
@@ -705,52 +782,15 @@ int runNested(const Args& args, Mode mode, Graph& g0,
 
     int totalAccepted = 0;
     std::vector<int> cands;
+    cands.reserve(states[0]->N + 1);
+    std::vector<int> order;
     for (int sw = 0; sw < args.sweeps; ++sw) {
         if (sw) o << ",";
         o << "{\"sweep\":" << sw << ",\"levels\":[";
         for (int l = 0; l < L; ++l) {
-            BlockState& st = *states[l];
-            std::vector<int> order(st.N);
-            for (int i = 0; i < st.N; ++i) order[i] = i;
-            jsShuffle(order, rng);
             if (l) o << ",";
-            o << "{\"level\":" << l << ",\"visit_order\":[";
-            for (int i = 0; i < st.N; ++i) { if (i) o << ","; o << order[i]; }
-            o << "],\"S_pre\":";
-            em.writeDouble(st.entropy());
-            o << ",\"visits\":[";
-            int sweepAccepted = 0;
-            for (int i = 0; i < (int)order.size(); ++i) {
-                int v = order[i];
-                int fromR = st.blockOf(v);
-                candidatePool(st, v, cands);
-                int pickIdx = rng.intRange(0, (int)cands.size() - 1);
-                int toS = cands[pickIdx];
-                double dS = (toS == fromR) ? 0.0 : st.virtualMove(v, toS);
-                double acceptU = rng.acceptUniform();
-                bool accept = (dS <= 0.0) || (acceptU < std::exp(-args.beta * dS));
-                bool committed = accept && (toS != fromR);
-                if (committed) { st.moveVertex(v, toS); ++sweepAccepted; }
-                if (i) o << ",";
-                o << "{\"v\":" << v
-                  << ",\"fromR\":" << fromR
-                  << ",\"toS\":" << toS
-                  << ",\"cands\":[";
-                for (size_t j = 0; j < cands.size(); ++j) { if (j) o << ","; o << cands[j]; }
-                o << "],\"dS\":";
-                em.writeDouble(dS);
-                o << ",\"acceptU\":";
-                em.writeDouble(acceptU);
-                o << ",\"accept\":" << (accept ? "true" : "false")
-                  << ",\"moved\":" << (committed ? "true" : "false")
-                  << "}";
-            }
-            totalAccepted += sweepAccepted;
-            o << "],\"S_post\":";
-            em.writeDouble(st.entropy());
-            o << ",\"accepted\":" << sweepAccepted
-              << ",\"Bne_post\":" << st.Bne
-              << "}";
+            totalAccepted += runSweep(*states[l], rng, args.beta, cands, order,
+                                      em, o, {"level", l});
             // Propagate updated e_rs to upper levels. virtualMove's
             // apply-eval-revert can mutate neList ordering even when no
             // move is committed, which percolates into the cand pools
@@ -822,50 +862,13 @@ int main(int argc, char** argv) try {
     o << ",\"Bne_init\":" << st.Bne;
     o << ",\"sweeps\":[";
 
-    std::vector<int> order(st.N);
+    std::vector<int> order;
     std::vector<int> cands; cands.reserve(st.N + 1);
     int totalAccepted = 0;
     for (int sw = 0; sw < args.sweeps; ++sw) {
-        for (int i = 0; i < st.N; ++i) order[i] = i;
-        jsShuffle(order, rng);
         if (sw) o << ",";
-        o << "{\"sweep\":" << sw << ",\"visit_order\":[";
-        for (int i = 0; i < st.N; ++i) { if (i) o << ","; o << order[i]; }
-        o << "],\"S_pre\":";
-        em.writeDouble(st.entropy());
-        o << ",\"visits\":[";
-        int sweepAccepted = 0;
-        for (int i = 0; i < (int)order.size(); ++i) {
-            int v = order[i];
-            int fromR = st.blockOf(v);
-            candidatePool(st, v, cands);
-            int pickIdx = rng.intRange(0, (int)cands.size() - 1);
-            int toS = cands[pickIdx];
-            double dS = (toS == fromR) ? 0.0 : st.virtualMove(v, toS);
-            double acceptU = rng.acceptUniform();
-            bool accept = (dS <= 0.0) || (acceptU < std::exp(-args.beta * dS));
-            bool committed = accept && (toS != fromR);
-            if (committed) { st.moveVertex(v, toS); ++sweepAccepted; }
-            if (i) o << ",";
-            o << "{\"v\":" << v
-              << ",\"fromR\":" << fromR
-              << ",\"toS\":" << toS
-              << ",\"cands\":[";
-            for (size_t j = 0; j < cands.size(); ++j) { if (j) o << ","; o << cands[j]; }
-            o << "],\"dS\":";
-            em.writeDouble(dS);
-            o << ",\"acceptU\":";
-            em.writeDouble(acceptU);
-            o << ",\"accept\":" << (accept ? "true" : "false")
-              << ",\"moved\":" << (committed ? "true" : "false")
-              << "}";
-        }
-        totalAccepted += sweepAccepted;
-        o << "],\"S_post\":";
-        em.writeDouble(st.entropy());
-        o << ",\"accepted\":" << sweepAccepted
-          << ",\"Bne_post\":" << st.Bne
-          << "}";
+        totalAccepted += runSweep(st, rng, args.beta, cands, order,
+                                  em, o, {"sweep", sw});
     }
     o << "],\"S_final\":";
     em.writeDouble(st.entropy());

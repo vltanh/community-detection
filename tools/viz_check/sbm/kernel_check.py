@@ -1,38 +1,41 @@
-"""SBM flat-variant kernel cross-check driver.
+"""SBM kernel cross-check driver.
 
 Three legs (per cd_tracer_pattern.md):
 
-  1. Canonical (Python). Builds a graph-tool BlockState (DC/NDC) at the
-     trace's init partition and asserts state.entropy(...) matches the
-     instrumented C++ leg's S_init within 1e-10 relative. PP recomputes
-     the JS Bernoulli-2-rate formula in Python (graph-tool's PPBlockState
-     is the degree-corrected PP variant; not the same model class).
+  1. Canonical (Python). For DC/NDC: graph-tool BlockState.entropy at
+     the trace's init partition (drift 0 / 1.5e-14 relative on dnc).
+     For PP: a manual Python recompute of the JS Zhang+Peixoto 2020
+     Bernoulli-2-rate formula (graph-tool's PPBlockState is the
+     degree-corrected PP variant from Peixoto 2018; different model).
+     For nested variants this leg covers level 0 only.
 
-  2. Instrumented C++ (`/tmp/sbm_flat_kernel_check --mode={dc,ndc,pp}`).
-     Implements the JS port's mcmc_sweep semantics (uniform proposal at
-     c->infty, single-vertex MH, exact microcanonical entropy) under
-     std::mt19937 seeded by --seed. Emits a per-visit JSON trace.
+  2. Instrumented C++ (`/tmp/sbm_flat_kernel_check`). flat_traced.cpp
+     implements the JS port's mcmc_sweep semantics (uniform proposal
+     at c->infty, single-vertex MH, exact microcanonical entropy)
+     under std::mt19937 seeded by --seed. With --nested it also
+     wraps a NestedBlockState-style level stack with auto-synthesised
+     hierarchy and per-sweep e_rs propagation through the levels.
 
   3. JS replay (`kernel_check.mjs`). Applies the cpp trace's per-visit
      (toS, accept) sequence to comdet/js/sbm via opts.proposalOracle +
-     opts.visitOrder, byte-equal vs cpp.
+     opts.visitOrder, byte-equal vs cpp at every level.
 
-The bar is leg 2 <-> leg 3 byte-equal (trace + final partition). Leg 1
-gives a structural anchor: the entropy formula matches graph-tool at
-the same partition for DC/NDC, and matches a Python recompute of the
-JS formula for PP (Zhang+Peixoto 2020 microcanonical Bernoulli).
+The bar is leg 2 <-> leg 3 byte-equal (trace + final per-level
+partition). Leg 1 anchors the entropy formula to graph-tool / a
+documented Python recompute.
 
-Variants -> underlying mode(s):
+Variants -> underlying kernel(s):
 
-  flat-{dc,ndc,pp}   -> single mode
-  nested-{dc,ndc}    -> same kernel as flat at level 0 (per JS port)
-  flat-best          -> all 3 single-mode kernels in turn
-  nested-best        -> dc + ndc kernels in turn
+  flat-{dc,ndc,pp}   -> single flat kernel
+  nested-{dc,ndc}    -> single nested kernel (auto-synthesised
+                        hierarchy, default 4 levels capped at B==1)
+  flat-best          -> flat kernels for dc + ndc + pp in turn
+  nested-best        -> nested kernels for dc + ndc in turn
 
 Run:
     python tools/viz_check/sbm/kernel_check.py [--verbose]
                                                [--variant flat-dc | ... | nested-best]
-                                               [--seed N] [--sweeps K]
+                                               [--seed N] [--sweeps K] [--levels K]
                                                [--no-canonical-check]
 """
 from __future__ import annotations

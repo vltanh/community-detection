@@ -17,6 +17,8 @@ Run inside conda env `nwbench` (graph-tool is conda-only):
 from __future__ import annotations
 
 import argparse
+import collections
+import math
 import sys
 from pathlib import Path
 
@@ -125,29 +127,20 @@ def main():
         # graph-tool involvement). cpp emits S via the same formula;
         # this leg validates the cpp arithmetic at long-double-cast
         # precision.
-        import math
-        import collections
         cnts = collections.Counter(mem)
         nr = list(cnts.values())
-        # e_rs (doubled diag): use raw graph adjacency.
         K = len(nr)
-        ers = [[0.0] * K for _ in range(K)]
+        # e_rs doubled-diag: each intra-block edge contributes 2 to e_rr;
+        # off-diag undirected edge contributes 1 to e_rs and to e_sr.
+        ers_diag = [0.0] * K
         for u, v in edges:
             r, s = mem[u], mem[v]
-            if u == v:
-                ers[r][r] += 2.0
-            else:
-                ers[r][s] += 1.0
-                if r != s:
-                    ers[s][r] += 1.0
-                else:
-                    ers[r][r] += 1.0
-        E = sum(1 for _ in edges)
-        Ein = sum(ers[r][r] for r in range(K)) / 2.0
-        Eout = E - Ein
+            if r == s:
+                ers_diag[r] += 2.0
+        Ein = sum(ers_diag) / 2.0
+        Eout = len(edges) - Ein
         Min = sum(nr[r] * (nr[r] - 1) / 2.0 for r in range(K))
-        Mtot = N * (N - 1) / 2.0
-        Mout = Mtot - Min
+        Mout = N * (N - 1) / 2.0 - Min
 
         def lbinom(n, k):
             if n <= 0 or k < 0 or k > n:
@@ -159,8 +152,7 @@ def main():
             S_pp += lbinom(Min, Ein)
         if Mout > 0 and Eout > 0 and Eout <= Mout:
             S_pp += lbinom(Mout, Eout)
-        S_pp += math.log(min(E, Min) + 1)
-        # partition_dl JS-style.
+        S_pp += math.log(min(len(edges), Min) + 1)
         S_pp += math.log(N) + math.lgamma(N + 1) + lbinom(N - 1, K - 1)
         for n_r in nr:
             S_pp -= math.lgamma(n_r + 1)

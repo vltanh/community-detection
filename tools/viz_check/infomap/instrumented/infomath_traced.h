@@ -18,15 +18,20 @@
 
 #include <cmath>
 #include <cstdlib>
+#include "js_math_port.h"
 
 namespace infomap {
 namespace infomath {
 
   using std::log2;
 
+  // plogp routes through jsLog2 (fdlibm-derived, bit-equal V8 Math.log * LOG2E)
+  // instead of std::log2. The std::log2 / Math.log2 path drifts by 1 ulp on
+  // ~1 in 1e5 inputs (verified at tools/viz_check/infomap/L2_log2/). Closes
+  // audit row D for the kernel hot path.
   inline double plogp(double p)
   {
-    return p > 0.0 ? p * log2(p) : 0.0;
+    return p > 0.0 ? p * jsmath::jsLog2(p) : 0.0;
   }
 
   inline double isEqual(double a, double b, double tol = 1e-8)

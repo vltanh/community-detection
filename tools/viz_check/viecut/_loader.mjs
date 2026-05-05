@@ -23,7 +23,7 @@ function locateJsDir() {
 
 // Order matches script-tag order in wcc.html / cm.html.
 const ORDER = [
-  "random.js", "union_find.js", "node_bucket_pq.js",
+  "random.js", "union_find.js", "node_bucket_pq.js", "fifo_node_bucket_pq.js",
   "mutable_graph.js", "cactus_graph.js",
   "balanced_cut_dfs.js", "most_balanced.js",
   "minimum_cut_helpers.js", "contract_graph.js", "contraction_tests.js",

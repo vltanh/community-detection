@@ -51,6 +51,38 @@ function bipartitionMatches(target, inSet) {
   return exact || flip;
 }
 
+// Compare JS-built MutableGraph cactus to canonical's parsed JSON cactus.
+// Asserts node count, per-node containedVertices (set-equal), and per-node
+// adjacency (target,weight pairs as sorted multisets — adjacency order is
+// implementation-defined).
+function cactusStructureMatches(jsCactus, canonCactus) {
+  if (jsCactus.n() !== canonCactus.n) return "n mismatch";
+  const m = canonCactus.n;
+  for (let n = 0; n < m; n++) {
+    const jsCv = [...jsCactus.containedVertices(n)].sort((a, b) => a - b);
+    const canonCv = [...canonCactus.nodes[n].contained].sort((a, b) => a - b);
+    if (jsCv.length !== canonCv.length) return `node ${n} contained length`;
+    for (let i = 0; i < jsCv.length; i++) {
+      if (jsCv[i] !== canonCv[i]) return `node ${n} contained[${i}]`;
+    }
+    const jsAdj = [];
+    const ne = jsCactus.get_first_invalid_edge(n);
+    for (let e = 0; e < ne; e++) {
+      jsAdj.push([jsCactus.getEdgeTarget(n, e), jsCactus.getEdgeWeight(n, e)]);
+    }
+    jsAdj.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
+    const canonAdj = canonCactus.adj[n].map((e) => [e.target, e.weight]);
+    canonAdj.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
+    if (jsAdj.length !== canonAdj.length) return `node ${n} adj length`;
+    for (let i = 0; i < jsAdj.length; i++) {
+      if (jsAdj[i][0] !== canonAdj[i][0] || jsAdj[i][1] !== canonAdj[i][1]) {
+        return `node ${n} adj[${i}]`;
+      }
+    }
+  }
+  return null;
+}
+
 function main() {
   const jsonPath = process.argv[2];
   if (!jsonPath) {
@@ -80,19 +112,17 @@ function main() {
       failures.push({ tag, jsCut: result.cutValue, canonCut: cl.mincut });
       continue;
     }
+    const cactusErr = cactusStructureMatches(result.cactus, cl.cactus);
+    if (cactusErr) {
+      fail++;
+      failures.push({ tag, cactusErr });
+      continue;
+    }
     const target = cl.bipartition;
     const inSet = new Set(result.inPartition);
     if (bipartitionMatches(target, inSet)) {
       pass++;
-      continue;
-    }
-    // Mismatch: cut value matches but the direct bipartition differs
-    // (start_vertex RNG state diverges from canonical's). Sweep on the
-    // JS-built cactus and accept if any sv reproduces canonical's pick.
-    const sweep = VIECUT.bipartitionFromCactusWithSweep(
-      result.cactus, result.cactus.getOriginalNodes(), result.cutValue, target);
-    if (sweep.ok) pass++;
-    else {
+    } else {
       fail++;
       failures.push({ tag, n: cl.n_local, canonCut: cl.mincut,
                       jsCut: result.cutValue, target,
@@ -102,9 +132,10 @@ function main() {
   console.log(`replay-full summary: ${pass}/${pass + fail} clusters PASS`);
   if (fail > 0) {
     for (const f of failures.slice(0, 5)) {
-      console.error(`  FAIL ${f.tag}`,
-                    f.err ? f.err :
-                    `js=${f.jsCut} canon=${f.canonCut}`);
+      const msg = f.err ? f.err
+        : f.cactusErr ? `cactus: ${f.cactusErr}`
+        : `js=${f.jsCut} canon=${f.canonCut}`;
+      console.error(`  FAIL ${f.tag} ${msg}`);
     }
     process.exit(1);
   }

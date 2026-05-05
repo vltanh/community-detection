@@ -63,12 +63,18 @@ let leafNodeFlowLogNodeFlow = 0;
 // Build leaf graph (compact ids 0..n-1) using the same flow values
 // canonical's FlowCalculator::calcUndirectedFlow assigns: link.flow =
 // 2 * w / sumWeightedDegree (w == 1, sumWeightedDegree == 2m for our
-// unweighted undirected fixtures).
+// unweighted undirected fixtures). Sort by (source ASC, target ASC)
+// to match canonical's nodeLinkMap iteration order (std::map keyed
+// by source id with inner std::map keyed by target id) — this fixes
+// the FP-summation order in buildActiveGraph's super-link aggregation
+// so the super-graph's link.flow values are bit-identical to
+// canonical's consolidateModules result.
 const m = tracer.edges.length;
 const sumWeightedDegree = 2 * m;
-const leafLinks = tracer.edges.map(([u, v]) => ({
-  u, v, weight: 1.0, flow: 2.0 / sumWeightedDegree,
-}));
+const leafLinks = tracer.edges
+  .slice()
+  .sort((a, b) => a[0] - b[0] || a[1] - b[1])
+  .map(([u, v]) => ({ u, v, weight: 1.0, flow: 2.0 / sumWeightedDegree }));
 
 // Per-level active-graph builder (same as before).
 function buildActiveGraph(level) {
@@ -219,6 +225,10 @@ for (let ci = 0; ci < tracer.calls.length; ci++) {
       totalMismatches += 1;
       levelMismatchCount += 1;
       levelPass = false;
+    }
+    if (dL > 0 && globalThis.__firstDriftReported === undefined) {
+      globalThis.__firstDriftReported = true;
+      console.log(`  first-drift call ${ci} (level ${call.l}) visit ${k} v=${cn.v}: js.L=${js.L.toFixed(20)}  trace.L=${cn.L.toFixed(20)}  ΔL=${dL.toExponential(3)}`);
     }
     levelVisitCount += 1;
     totalVisits += 1;

@@ -7,6 +7,14 @@
  For more information, see <http://www.mapequation.org>
  ******************************************************************************/
 
+// Force the forked plogp definition (Math.LOG2E-form) to win the
+// One-Definition-Rule ahead of canonical's std::log2-based plogp.
+// The forked header sets the same INFOMATH_H_ guard so MapEquation.h
+// + InfomapOptimizer.h's own #include of "../utils/infomath.h" become
+// no-ops; every plogp call inlined into our compilation unit reduces
+// to `p * (std::log(p) * LOG2E)`, matching JS's plogp bit-for-bit.
+#include "infomath_traced.h"
+
 #include "InfomapBase.h"
 #include "InfomapConfig.h"
 #include "InfoNode.h"

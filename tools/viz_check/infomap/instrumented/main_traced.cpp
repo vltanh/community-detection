@@ -9,6 +9,10 @@
 // Build: ./build.sh -> /tmp/infomap_kernel_check
 // Run:   /tmp/infomap_kernel_check <edge.csv> <seed> <out.csv>
 
+// Match infomap_base_traced.cpp's plogp override so any inline
+// instantiation in this compilation unit also uses Math.LOG2E form.
+#include "infomath_traced.h"
+
 #include "Infomap.h"
 
 #include <algorithm>

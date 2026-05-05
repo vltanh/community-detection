@@ -55,7 +55,7 @@ extern void leiden_trace_reset();
 int main(int argc, char** argv) {
     if (argc < 6) {
         std::fprintf(stderr,
-                     "usage: %s <edge.csv> <out.csv> <cpm|mod> <param> <seed>\n",
+                     "usage: %s <edge.csv> <out.csv> <cpm|mod> <param> <seed> [iters=2]\n",
                      argv[0]);
         return 2;
     }
@@ -64,6 +64,7 @@ int main(int argc, char** argv) {
     std::string quality = argv[3];
     double param = std::stod(argv[4]);
     int seed = std::atoi(argv[5]);
+    int iters = (argc > 6) ? std::atoi(argv[6]) : 2;
 
     fprintf(stderr, "[TRACE-LD] PIPELINE_START edge=%s quality=%s param=%.6f seed=%d\n",
             edge_csv.c_str(), quality.c_str(), param, seed);
@@ -86,7 +87,7 @@ int main(int argc, char** argv) {
     Optimiser o;
     o.set_rng_seed(seed);
     double Q_init = partition->quality();
-    for (int i = 0; i < 2; i++) o.optimise_partition(partition);
+    for (int i = 0; i < iters; i++) o.optimise_partition(partition);
     double Q_final = partition->quality();
 
     fprintf(stderr, "[TRACE-LD] PIPELINE_END Q %.6f -> %.6f comms=%zu passes=%zu\n",

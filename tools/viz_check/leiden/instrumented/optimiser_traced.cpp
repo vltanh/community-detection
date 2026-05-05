@@ -688,6 +688,15 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
       cerr << "Consider " << comms.size() << " communities for moving." << endl;
     #endif
 
+    // [TRACE-LD-DEBUG] dump v=185 first-visit candidate order on top level.
+    if (v == 185 && pass_idx == 0 && n == 906) {
+      fprintf(stderr, "[TRACE-LD-DEBUG] v=185 candidates order: ");
+      for (size_t i = 0; i < comms.size() && i < 20; i++) {
+        fprintf(stderr, "%zu%s", comms[i], i + 1 == comms.size() || i == 19 ? "" : ",");
+      }
+      fprintf(stderr, " (n=%zu)\n", comms.size());
+    }
+
     size_t max_comm = v_comm;
     double max_improv = (0 < max_comm_size && max_comm_size < partitions[0]->csize(v_comm)) ? -INFINITY : 10*DBL_EPSILON;
     double v_size = graphs[0]->node_size(v);

@@ -38,11 +38,13 @@ def newest_mtime(*paths: Path) -> float:
     return max((p.stat().st_mtime for p in paths if p.exists()), default=0.0)
 
 
-def build_tracer(here: Path, output_bin: Path | None = None) -> None:
-    """Run `here/instrumented/build.sh`. Skip if output_bin is newer
-    than every source file in instrumented/.
-    """
-    script = here / "instrumented" / "build.sh"
+def build_tracer(here: Path, output_bin: Path | None = None,
+                 script_name: str = "build.sh") -> None:
+    """Run `here/instrumented/<script_name>`. Skip if output_bin is newer
+    than every source file in instrumented/. `script_name` lets a leg
+    keep multiple build scripts in the same instrumented/ dir (e.g.
+    a relative-tolerance build.sh + a bit-equal build_l4.sh)."""
+    script = here / "instrumented" / script_name
     if output_bin is not None and output_bin.exists():
         srcs = list((here / "instrumented").glob("*"))
         srcs = [p for p in srcs if p.is_file()]

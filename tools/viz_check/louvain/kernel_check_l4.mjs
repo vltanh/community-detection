@@ -39,6 +39,10 @@ globalThis.window.COMDET = { FIXTURE: { nodes: [], edges: [], gt: [] } };
 // uncommitted edits to louvain.js).
 const LOUVAIN_JS = process.env.LOUVAIN_JS
   || path.join(__dirname, "../../../vltanh.github.io/comdet/js/louvain/louvain.js");
+if (!fs.existsSync(LOUVAIN_JS)) {
+  console.error(`LOUVAIN_JS=${LOUVAIN_JS} does not exist; set env LOUVAIN_JS to a HEAD-pinned louvain.js`);
+  process.exit(2);
+}
 await import(LOUVAIN_JS);
 
 function bits(x) {
@@ -135,8 +139,7 @@ for (let L = 0; L < Lmin; L++) {
     fail++;
     examples.push(`L${L}: cpp has ${cpLv.visits.length} visits but js produced ${cpIdx}`);
   }
-  // Compare post-level n2c.
-  const jsN2c = jsLv.finePost ? null : null;  // JS run does NOT expose pre-renumber n2c; skip.
+  // Skip post-level n2c compare: JS run does not expose pre-renumber n2c.
 }
 
 // Compare composed fine_membership.

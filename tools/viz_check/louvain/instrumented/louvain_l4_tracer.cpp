@@ -38,7 +38,6 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
-#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -56,7 +55,7 @@ static inline uint64_t bits_of(double x) {
     uint64_t b; std::memcpy(&b, &x, sizeof(b)); return b;
 }
 
-// ───────────────────────── MT19937 (mirror louvain.js:36-79) ────────
+// ───────────────────────── MT19937 (mirror louvain.js MT19937) ──────
 // Matsumoto-Nishimura 32-bit. Tempering identical to JS.
 struct MT19937 {
     static constexpr int N = 624;
@@ -103,7 +102,7 @@ struct MT19937 {
     }
 };
 
-// Mirror louvain.js:82-87 shuffle (Fisher-Yates idx from n-1 down to 1).
+// Mirror louvain.js shuffle (Fisher-Yates idx from n-1 down to 1).
 static void js_shuffle(std::vector<int32_t>& arr, MT19937& rng) {
     for (int idx = (int)arr.size() - 1; idx >= 1; idx--) {
         int j = rng.int_inclusive(0, idx);
@@ -111,7 +110,7 @@ static void js_shuffle(std::vector<int32_t>& arr, MT19937& rng) {
     }
 }
 
-// ───────────────────────── Graph (mirror louvain.js:91-169) ─────────
+// ───────────────────────── Graph (mirror louvain.js Graph) ──────────
 struct Graph {
     int32_t n;
     int32_t m;
@@ -151,7 +150,7 @@ struct Graph {
         nodeSelfWeights.assign(n, 0.0);
         for (int32_t e = 0; e < m; e++) if (eu[e] == ev[e]) nodeSelfWeights[eu[e]] += ew[e];
         strength.assign(n, 0.0);
-        // Per-endpoint convention (mirror louvain.js:117-122).
+        // Per-endpoint convention (mirror louvain.js Graph strength build).
         for (int32_t e = 0; e < m; e++) {
             strength[eu[e]] += ew[e];
             strength[ev[e]] += ew[e];
@@ -172,7 +171,7 @@ struct Graph {
         return p;
     }
 
-    // collapse(membership, ncomm) — mirror louvain.js:144-167.
+    // collapse(membership, ncomm) — mirror louvain.js Graph.collapse.
     // Use std::unordered_map keyed on lo*ncomm+hi (single Map.set per edge).
     // Iteration order = JS Map iteration order = INSERTION order. For
     // bit-equal collapse output order across JS+cpp we mirror that:
@@ -216,7 +215,7 @@ struct Graph {
     }
 };
 
-// ───────────────────────── Modularity (mirror louvain.js:530-567) ───
+// ───────────────────────── Modularity (mirror louvain.js Modularity) ─
 // Pure structs of operations (no virtual dispatch). diffMove + quality
 // take Partition& (defined below). Use forward decl trick.
 
@@ -226,7 +225,7 @@ struct Modularity {
     static double quality(Partition& P);
 };
 
-// ───────────────────────── Partition (mirror louvain.js:172-528) ────
+// ───────────────────────── Partition (mirror louvain.js Partition) ──
 struct Partition {
     Graph* graph;
     int32_t n;
@@ -243,7 +242,7 @@ struct Partition {
     std::vector<double> totalWeightFromCommStorage;  // used only when directed
     double totalWeightInAllComms;
     double totalPossibleEdgesInAllComms;
-    std::set<int32_t> empties;
+    std::unordered_set<int32_t> empties;
 
     // Per-node neighbour-comm cache.
     int32_t cacheV;
@@ -527,14 +526,11 @@ struct Partition {
         invalidateCache();
     }
 
-    int32_t memberOf(int32_t v) const { return membership[v]; }
-    int32_t cnodes_(int32_t c) const { return cnodes[c]; }
-    int32_t ncomm_() const { return ncomm; }
 };
 
 // ───────────── Modularity diffMove + quality (mirror JS) ────────────
 double Modularity::diffMove(Partition& P, int32_t v, int32_t newComm) {
-    int32_t oldComm = P.memberOf(v);
+    int32_t oldComm = P.membership[v];
     if (oldComm == newComm) return 0.0;
     Graph& G = *P.graph;
     double m = G.totalWeight;
@@ -557,8 +553,8 @@ double Modularity::quality(Partition& P) {
     if (m <= 0.0) return 0.0;
     double W = G.isDirected() ? m : 2.0 * m;
     double q = 0.0;
-    for (int32_t c = 0; c < P.ncomm_(); c++) {
-        if (P.cnodes_(c) == 0) continue;
+    for (int32_t c = 0; c < P.ncomm; c++) {
+        if (P.cnodes[c] == 0) continue;
         double ec = P.totalWeightInComm[c];
         double Kc = P.totalWeightFromComm(c);
         q += (G.isDirected() ? ec : 2.0 * ec) - (Kc * Kc) / W;
@@ -566,7 +562,7 @@ double Modularity::quality(Partition& P) {
     return q / W;
 }
 
-// ───────────── sweep + phase1 + run (mirror louvain.js:572-686) ─────
+// ───────────── sweep + phase1 + run (mirror louvain.js sweep/phase1/run) ─
 struct VisitRecord {
     int32_t pass;
     int32_t visit;
@@ -603,12 +599,13 @@ static SweepOut louvain_sweep(Partition& P, MT19937& rng,
     SweepOut so{0.0, 0};
     for (int32_t i = 0; i < n; i++) {
         int32_t v = order[i];
-        int32_t vComm = P.memberOf(v);
-        // Build cands: copy of getNeighComms(v) + vComm if absent.
-        std::vector<int32_t> cands = P.getNeighComms(v);
-        bool hasV = false;
-        for (size_t k = 0; k < cands.size(); k++) if (cands[k] == vComm) { hasV = true; break; }
-        if (!hasV) cands.push_back(vComm);
+        int32_t vComm = P.membership[v];
+        // JS sweep iterates getNeighComms(v) + vComm-if-absent. The
+        // c==vComm pass produces delta=0 and never beats the strict-
+        // positive `> maxImprov` cutoff with init 0, so the trailing
+        // vComm visit can't change the decision. Iterate by const-ref
+        // and skip vComm; saves a per-visit vector copy on the hot path.
+        const std::vector<int32_t>& cands = P.getNeighComms(v);
         int32_t maxComm = vComm;
         double  maxImprov = 0.0;
         for (size_t j = 0; j < cands.size(); j++) {
@@ -718,19 +715,15 @@ static void read_edge_csv(const std::string& path,
         std::exit(2);
     }
     std::string line;
-    bool header = false;
     int32_t maxNode = -1;
     while (std::getline(f, line)) {
         if (line.empty()) continue;
-        if (!header) {
-            // Skip 'source,target' / 'node_id1,node_id2' header heuristically.
-            header = true;
-            if (!std::isdigit((unsigned char)line[0])) continue;
-        }
-        // Replace commas/tabs with spaces.
         for (char& c : line) if (c == ',' || c == '\t') c = ' ';
         std::stringstream ss(line);
         int32_t u, v;
+        // A non-numeric header line ("source,target", "node_id1,node_id2")
+        // fails this parse and is silently skipped. Avoids a separate
+        // header heuristic.
         if (!(ss >> u >> v)) continue;
         double w = 1.0;
         ss >> w;

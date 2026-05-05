@@ -27,11 +27,11 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const args = process.argv.slice(2);
-if (args.length < 3) {
-  console.error("usage: kernel_check.mjs <tracer.json> <canonical.csv> <edge.csv>");
+if (args.length < 2) {
+  console.error("usage: kernel_check.mjs <tracer.json> <canonical.csv>");
   process.exit(2);
 }
-const [tracerJsonPath, canonCsvPath, edgePath] = args;
+const [tracerJsonPath, canonCsvPath] = args;
 
 globalThis.window = globalThis;
 globalThis.window.COMDET = { FIXTURE: { nodes: [], edges: [], gt: [] } };

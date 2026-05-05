@@ -59,32 +59,31 @@ def main():
         # Leg A: canonical pypi com.csv.
         canon_csv = work / f"{name}_infomap_canon.csv"
         canon_stats = work / f"{name}_infomap_canon_stats.json"
-        rc = subprocess.run(PY + [str(CANON_RUNNER), str(edge),
-                                  str(args.seed), str(canon_csv)],
-                            capture_output=True, text=True)
-        if rc.returncode != 0:
-            sys.stderr.write(rc.stderr)
+        ok, stdout, stderr = D.run_capture(
+            PY + [str(CANON_RUNNER), str(edge), str(args.seed), str(canon_csv)])
+        if not ok:
+            sys.stderr.write(stderr)
             failures += 1
             continue
-        canon_stats.write_text(rc.stdout)
+        canon_stats.write_text(stdout)
         if args.verbose:
-            print(rc.stderr)
+            print(stderr)
         canon_csv_text = canon_csv.read_text()
 
         # Leg B: tracer (forked InfomapBase.cpp + main_traced.cpp).
         tracer_csv = work / f"{name}_infomap_tracer.csv"
         tracer_json = work / f"{name}_infomap_tracer.json"
         tracer_log = work / f"{name}_infomap_tracer.log"
-        with open(tracer_json, "w") as out, open(tracer_log, "w") as err:
-            rc = subprocess.run([str(TRACER), str(edge), str(args.seed),
-                                 str(tracer_csv)],
-                                stdout=out, stderr=err)
-        if rc.returncode != 0:
-            sys.stderr.write(tracer_log.read_text())
+        ok, stdout, stderr = D.run_capture(
+            [str(TRACER), str(edge), str(args.seed), str(tracer_csv)])
+        tracer_json.write_text(stdout)
+        tracer_log.write_text(stderr)
+        if not ok:
+            sys.stderr.write(stderr)
             failures += 1
             continue
         if args.verbose:
-            print(tracer_log.read_text())
+            print(stderr)
         tracer_csv_text = tracer_csv.read_text()
 
         # canon_csv vs tracer_csv (byte-equal; both apply identical
@@ -98,8 +97,7 @@ def main():
 
         # Leg C: JS replay.
         ok, log, err = D.run_capture(["node", str(JS_REPLAY),
-                                      str(tracer_json), str(canon_csv),
-                                      str(edge)])
+                                      str(tracer_json), str(canon_csv)])
         last = (log + err).strip().splitlines()[-1] if (log + err).strip() else "(no output)"
         if ok:
             # Print the full JS replay log for transparency.

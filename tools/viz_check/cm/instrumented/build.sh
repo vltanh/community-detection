@@ -14,6 +14,7 @@ INC=(
     "-I$CC/external_libs/pcg-cpp/include"
     "-I$CC/includes"
     "-I$CC/src"
+    "-I$HERE/../../_common"
 )
 g++ -std=c++20 -O2 -Wall \
     "${INC[@]}" \

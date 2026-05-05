@@ -73,13 +73,7 @@ int main(int argc, char** argv) {
     std::vector<int> level0_n2c(c.qual->size);
     for (int i = 0; i < c.qual->size; i++) level0_n2c[i] = c.qual->n2c[i];
 
-    int level = 1;
-    bool improvement = true;
-    long double prev_qual = q0;
-    (void)prev_qual; (void)improvement; (void)level;
 
-    std::vector<int> agg_membership(n_orig);
-    for (int i = 0; i < n_orig; i++) agg_membership[i] = level0_n2c[i];
     fprintf(stderr, "[TRACE-LV] PIPELINE_END levels=1 Q0=%.6Lf Q1=%.6Lf\n", q0, new_qual);
 
     // Read relabel map (renumbered_id -> original_string_id) so JSON
@@ -129,9 +123,9 @@ int main(int argc, char** argv) {
     }
     std::cout << "\n  ],\n";
     std::cout << "  \"final_membership\": [";
-    for (size_t i = 0; i < agg_membership.size(); i++) {
+    for (size_t i = 0; i < level0_n2c.size(); i++) {
         if (i) std::cout << ",";
-        std::cout << agg_membership[i];
+        std::cout << level0_n2c[i];
     }
     std::cout << "],\n";
     std::cout << "  \"renum_to_orig\": [";

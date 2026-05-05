@@ -5,34 +5,26 @@
 //   includes/cm.h:12-39               (RunClusterOnPartition)
 //   includes/cm.h:41-155              (MinCutOrClusterWorker, --prune false)
 //   includes/constrained.h:301-324    (RunLeidenAndUpdatePartition)
-//   includes/constrained.h:335-389    (GetCommunities)
-//   includes/constrained.h:393-419    (GetConnectedComponents)
-//   includes/constrained.h:122-151    (RemoveInterClusterEdges)
 //   includes/constrained.h:425-471    (IsWellConnected, log branch)
-//   src/constrained.cpp:32-104        (LoadEdgesFromFile, GetOriginalToNewIdMap)
-//   src/constrained.cpp:116-133       (WriteClusterQueue<pair> for lineage)
+//   shared helpers (Get/Load/Read/Remove/GetCC) live in
+//   ../../_common/tracer_io.h.
 //
 // Single-thread (num_proc = 1), --prune false, --algorithm leiden-cpm,
 // hardcoded 1log_10(n) criterion (configurable via argv).
 //
 // stdout = JSON trace: {init: [...], rounds: [{pops: [...], reclusters: [...]}]}
 // stderr = [TRACE-CM ...] structured log.
-//
-// Linked against constrained-clustering's libinternal_libs.a (gives
-// MinCutCustom + libigraph + libleidenalg).
+
 // Per constrained.h:1-4, mincut_custom.h MUST be included first.
 #include "mincut_custom.h"
 
-#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <map>
 #include <queue>
 #include <set>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -40,138 +32,11 @@
 #include <libleidenalg/GraphHelper.h>
 #include <libleidenalg/CPMVertexPartition.h>
 #include <libleidenalg/Optimiser.h>
+#include "tracer_io.h"
 
-// ============================================================
-// [UPSTREAM constrained.h:57-69] get_delimiter
-// ============================================================
-static char get_delimiter(const std::string& filepath) {
-    std::ifstream f(filepath);
-    std::string line;
-    std::getline(f, line);
-    if (line.find(',') != std::string::npos) return ',';
-    if (line.find('\t') != std::string::npos) return '\t';
-    if (line.find(' ') != std::string::npos) return ' ';
-    throw std::invalid_argument("Could not detect filetype for " + filepath);
-}
+using namespace viz_check;
 
-// ============================================================
-// [UPSTREAM constrained.cpp:32-64] GetOriginalToNewIdMap
-// ============================================================
-static std::map<std::string, int> GetOriginalToNewIdMap(const std::string& edgelist) {
-    std::map<std::string, int> m;
-    char d = get_delimiter(edgelist);
-    std::ifstream f(edgelist);
-    std::string line;
-    int line_no = 0; int next = 0;
-    while (std::getline(f, line)) {
-        std::stringstream ss(line);
-        std::string val;
-        std::vector<std::string> cols;
-        while (std::getline(ss, val, d)) cols.push_back(val);
-        if (line_no == 0) { line_no++; continue; }
-        if (!m.contains(cols[0])) m[cols[0]] = next++;
-        if (!m.contains(cols[1])) m[cols[1]] = next++;
-        line_no++;
-    }
-    return m;
-}
-
-static std::map<int, std::string> InvertMap(const std::map<std::string, int>& m) {
-    std::map<int, std::string> inv;
-    for (auto const& [orig, nid] : m) inv[nid] = orig;
-    return inv;
-}
-
-// ============================================================
-// [UPSTREAM constrained.cpp:66-104] LoadEdgesFromFile
-// ============================================================
-static void LoadEdgesFromFile(igraph_t* g, const std::string& edgelist,
-                              const std::map<std::string,int>& m) {
-    igraph_add_vertices(g, m.size(), NULL);
-    char d = get_delimiter(edgelist);
-    std::ifstream f(edgelist);
-    std::string line;
-    int line_no = 0;
-    std::vector<std::pair<int,int>> raw;
-    while (std::getline(f, line)) {
-        if (line_no == 0) { line_no++; continue; }
-        std::stringstream ss(line);
-        std::string s, t;
-        std::getline(ss, s, d);
-        std::getline(ss, t, d);
-        raw.emplace_back(m.at(s), m.at(t));
-        line_no++;
-    }
-    igraph_vector_int_t edges;
-    igraph_vector_int_init(&edges, raw.size() * 2);
-    for (size_t i = 0; i < raw.size(); i++) {
-        VECTOR(edges)[2*i] = raw[i].first;
-        VECTOR(edges)[2*i+1] = raw[i].second;
-    }
-    igraph_add_edges(g, &edges, NULL);
-    igraph_vector_int_destroy(&edges);
-}
-
-// ============================================================
-// [UPSTREAM constrained.h:71-97] ReadCommunities
-// ============================================================
-static std::map<int,int> ReadCommunities(const std::map<std::string,int>& m,
-                                         const std::string& path) {
-    std::map<int,int> p;
-    char d = get_delimiter(path);
-    std::ifstream f(path);
-    std::string line;
-    int line_no = 0;
-    while (std::getline(f, line)) {
-        std::stringstream ss(line);
-        std::string val; std::vector<std::string> cols;
-        while (std::getline(ss, val, d)) cols.push_back(val);
-        if (line_no == 0) { line_no++; continue; }
-        if (m.contains(cols[0])) p[m.at(cols[0])] = std::atoi(cols[1].c_str());
-        line_no++;
-    }
-    return p;
-}
-
-// ============================================================
-// [UPSTREAM constrained.h:122-151] RemoveInterClusterEdges
-// ============================================================
-static void RemoveInterClusterEdges(igraph_t* g, const std::map<int,int>& m) {
-    igraph_vector_int_t rm; igraph_vector_int_init(&rm, 0);
-    igraph_eit_t eit; igraph_eit_create(g, igraph_ess_all(IGRAPH_EDGEORDER_ID), &eit);
-    for (; !IGRAPH_EIT_END(eit); IGRAPH_EIT_NEXT(eit)) {
-        igraph_integer_t e = IGRAPH_EIT_GET(eit);
-        int from = IGRAPH_FROM(g, e), to = IGRAPH_TO(g, e);
-        if (m.contains(from) && m.contains(to) && m.at(from) == m.at(to)) {
-        } else igraph_vector_int_push_back(&rm, e);
-    }
-    igraph_es_t es; igraph_es_vector_copy(&es, &rm);
-    igraph_delete_edges(g, es);
-    igraph_eit_destroy(&eit); igraph_es_destroy(&es); igraph_vector_int_destroy(&rm);
-}
-
-// ============================================================
-// [UPSTREAM constrained.h:393-419] GetConnectedComponents
-// ============================================================
-static std::vector<std::vector<int>> GetConnectedComponents(igraph_t* g) {
-    std::vector<std::vector<int>> out;
-    std::map<int, std::vector<int>> bucket;
-    igraph_vector_int_t cid; igraph_vector_int_init(&cid, 0);
-    igraph_vector_int_t sz;  igraph_vector_int_init(&sz, 0);
-    igraph_integer_t nc;
-    igraph_connected_components(g, &cid, &sz, &nc, IGRAPH_WEAK);
-    for (int n = 0; n < igraph_vcount(g); n++) {
-        int c = VECTOR(cid)[n];
-        if (VECTOR(sz)[c] > 1) bucket[c].push_back(n);
-    }
-    igraph_vector_int_destroy(&cid); igraph_vector_int_destroy(&sz);
-    for (auto& [c, members] : bucket) out.push_back(std::move(members));
-    return out;
-}
-
-// ============================================================
 // [UPSTREAM constrained.h:425-471] IsWellConnected (log branch)
-// ============================================================
 static bool IsWellConnectedLog(double pre_computed_log,
                                int in_size, int out_size, int cut) {
     double thr = pre_computed_log * std::log((double)(in_size + out_size));
@@ -179,10 +44,8 @@ static bool IsWellConnectedLog(double pre_computed_log,
     return !is_close && thr < cut;
 }
 
-// ============================================================
 // [UPSTREAM cm.h:12-39] RunClusterOnPartition (leiden-cpm only)
 // + [UPSTREAM constrained.h:301-324] RunLeidenAndUpdatePartition
-// ============================================================
 static std::vector<std::vector<int>>
 RunClusterOnPartition(const igraph_t* graph, double resolution, int seed,
                       std::vector<int>& partition,
@@ -195,7 +58,6 @@ RunClusterOnPartition(const igraph_t* graph, double resolution, int seed,
     igraph_t sub;
     igraph_induced_subgraph_map(graph, &sub, igraph_vss_vector(&keep),
                                 IGRAPH_SUBGRAPH_CREATE_FROM_SCRATCH, NULL, &idmap);
-    // Run Leiden CPM on the induced subgraph.
     Graph leiden_graph(&sub);
     CPMVertexPartition lpart(&leiden_graph, resolution);
     std::map<int,int> partition_map;
@@ -234,7 +96,7 @@ RunClusterOnPartition(const igraph_t* graph, double resolution, int seed,
 struct PopRecord {
     int round;
     int pop_idx;
-    int cluster_id;       // CM lineage id (input)
+    int cluster_id;       // CM lineage id
     int n;
     int cut;
     double threshold;
@@ -242,9 +104,9 @@ struct PopRecord {
     std::vector<int> cluster_nodes;
     std::vector<int> in_partition;
     std::vector<int> out_partition;
-    std::vector<int> in_leiden_membership;   // size = in_partition.size()
-    std::vector<int> out_leiden_membership;  // size = out_partition.size()
-    std::vector<std::pair<std::vector<int>, int>> children;  // (nodes, parent_cluster_id)
+    std::vector<int> in_leiden_membership;
+    std::vector<int> out_leiden_membership;
+    std::vector<std::pair<std::vector<int>, int>> children;
 };
 
 int main(int argc, char** argv) {
@@ -288,7 +150,7 @@ int main(int argc, char** argv) {
     RemoveInterClusterEdges(&graph, partition);
     fprintf(stderr, "[TRACE-CM] after_remove m=%lld\n", (long long)igraph_ecount(&graph));
 
-    // [UPSTREAM cm.cpp:25-57] initial bucket -> first-component-keeps-id,
+    // [UPSTREAM cm.cpp:25-57] initial bucket -> first-component-keeps-id;
     // others get fresh ids via parent_to_child_map.
     auto cluster_id_to_node_map = std::map<int, std::vector<int>>{};
     for (auto const& [nid, cid] : partition) cluster_id_to_node_map[cid].push_back(nid);
@@ -326,7 +188,6 @@ int main(int argc, char** argv) {
     std::queue<std::pair<std::vector<int>, int>> done_being_clustered;
     std::vector<PopRecord> trace;
     int round = 0;
-    int previous_done_size = 0;
 
     while (true) {
         fprintf(stderr, "[TRACE-CM] ROUND_START round=%d to_be_mincut=%zu\n",
@@ -347,11 +208,8 @@ int main(int argc, char** argv) {
             igraph_t sub;
             igraph_induced_subgraph_map(&graph, &sub, igraph_vss_vector(&keep),
                                         IGRAPH_SUBGRAPH_CREATE_FROM_SCRATCH, NULL, &idmap);
-            std::map<int,int> new_to_old, old_to_new;
-            for (size_t i = 0; i < cur.size(); i++) {
-                new_to_old[i] = VECTOR(idmap)[i];
-                old_to_new[VECTOR(idmap)[i]] = i;
-            }
+            std::map<int,int> new_to_old;
+            for (size_t i = 0; i < cur.size(); i++) new_to_old[i] = VECTOR(idmap)[i];
 
             // No --prune: skip the prune loop. Run mincut once.
             MinCutCustom mcc(&sub, "cactus");
@@ -417,7 +275,6 @@ int main(int argc, char** argv) {
             to_be_mincut.push({cur_pair.first, next_cluster_id});
             next_cluster_id++;
         }
-        previous_done_size = done_being_clustered.size();
         round++;
     }
 
@@ -443,11 +300,6 @@ int main(int argc, char** argv) {
         }
     }
     std::cout << "],\n  \"pops\": [\n";
-    auto emit_arr = [](const std::vector<int>& v) {
-        std::cout << "[";
-        for (size_t i = 0; i < v.size(); i++) { if (i) std::cout << ","; std::cout << v[i]; }
-        std::cout << "]";
-    };
     for (size_t i = 0; i < trace.size(); i++) {
         if (i) std::cout << ",\n";
         const auto& r = trace[i];
@@ -457,16 +309,16 @@ int main(int argc, char** argv) {
                   << ",\"thr\":" << r.threshold
                   << ",\"wc\":" << (r.wc ? "true" : "false")
                   << ",\"cluster\":";
-        emit_arr(r.cluster_nodes);
-        std::cout << ",\"in\":"; emit_arr(r.in_partition);
-        std::cout << ",\"out\":"; emit_arr(r.out_partition);
-        std::cout << ",\"in_leiden\":"; emit_arr(r.in_leiden_membership);
-        std::cout << ",\"out_leiden\":"; emit_arr(r.out_leiden_membership);
+        emit_int_array(std::cout, r.cluster_nodes);
+        std::cout << ",\"in\":"; emit_int_array(std::cout, r.in_partition);
+        std::cout << ",\"out\":"; emit_int_array(std::cout, r.out_partition);
+        std::cout << ",\"in_leiden\":"; emit_int_array(std::cout, r.in_leiden_membership);
+        std::cout << ",\"out_leiden\":"; emit_int_array(std::cout, r.out_leiden_membership);
         std::cout << ",\"children\":[";
         for (size_t k = 0; k < r.children.size(); k++) {
             if (k) std::cout << ",";
             std::cout << "{\"parent\":" << r.children[k].second << ",\"nodes\":";
-            emit_arr(r.children[k].first);
+            emit_int_array(std::cout, r.children[k].first);
             std::cout << "}";
         }
         std::cout << "]}";
@@ -479,7 +331,7 @@ int main(int argc, char** argv) {
             if (!first) std::cout << ",";
             first = false;
             std::cout << "{\"id\":" << q.front().second << ",\"nodes\":";
-            emit_arr(q.front().first);
+            emit_int_array(std::cout, q.front().first);
             std::cout << "}";
             q.pop();
         }

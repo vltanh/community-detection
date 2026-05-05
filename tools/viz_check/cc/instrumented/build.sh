@@ -20,6 +20,7 @@ if [[ ! -f "$IGRAPH_LIB" ]]; then
 fi
 g++ -std=c++20 -O2 -Wall \
     -I"$IGRAPH_INC" \
+    -I"$HERE/../../_common" \
     -o /tmp/cc_kernel_check \
     "$HERE/kernel_check.cpp" \
     "$IGRAPH_LIB" \

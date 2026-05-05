@@ -1,56 +1,30 @@
 """CC kernel cross-check driver.
 
-Three legs per fixture:
-
-1. **Canonical leg** — `constrained_clustering MincutOnly --connectedness-criterion 0`.
-2. **Instrumented C++ leg** — /tmp/cc_kernel_check; verbatim copy of the CC pipeline
-   (mincut_only.cpp Simple branch + GetConnectedComponents) with stderr trace at
-   every key state. Asserts byte-equal CSV output vs canonical.
-3. **JS replay leg** — tools/viz_check/cc/kernel_check.mjs; consumes the C++ tracer's
-   stdout JSON, runs comdet/js/cc/cc.js on the same input, asserts byte-equal
-   per-cluster node lists.
-
-CC has no RNG. The three legs must produce identical output.
+Three legs: canonical `constrained_clustering MincutOnly --connectedness-criterion 0`,
+instrumented C++ at /tmp/cc_kernel_check, JS replay via kernel_check.mjs.
 
 Run:
-    python tools/viz_check/cc/kernel_check.py
-    python tools/viz_check/cc/kernel_check.py --verbose
+    python tools/viz_check/cc/kernel_check.py [--verbose]
 """
 from __future__ import annotations
 
 import argparse
-import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parent.parent.parent  # community-detection/
+sys.path.insert(0, str(HERE.parent / "_common"))
+import driver as D
+
+REPO = D.repo_root_from_here(HERE)
 BIN = REPO / "constrained-clustering" / "build" / "bin" / "constrained_clustering"
 TRACER = Path("/tmp/cc_kernel_check")
 JS_REPLAY = HERE / "kernel_check.mjs"
 
 
-def build_tracer():
-    rc = subprocess.run(["bash", str(HERE / "instrumented" / "build.sh")],
-                        capture_output=True, text=True)
-    if rc.returncode != 0:
-        sys.stderr.write(rc.stdout + rc.stderr)
-        sys.exit(2)
-
-
-def emit_fixture_inputs(out_dir: Path):
-    """Emit edge.csv + com_gt.csv from the comdet 32-node fixture."""
-    fixture_emitter = REPO / "tests" / "cd_verify" / "emit_fixture.js"
-    rc = subprocess.run(["node", str(fixture_emitter), str(out_dir)],
-                        capture_output=True, text=True)
-    if rc.returncode != 0:
-        sys.stderr.write(rc.stdout + rc.stderr)
-        sys.exit(2)
-
-
-def run_canonical(edge: Path, com: Path, out: Path) -> str:
+def canonical_fn(edge: Path, com: Path, work: Path, name: str):
+    out = work / f"{name}_cc_canon.csv"
     log = out.with_suffix(".log")
     rc = subprocess.run([str(BIN), "MincutOnly",
                          "--edgelist", str(edge),
@@ -62,21 +36,23 @@ def run_canonical(edge: Path, com: Path, out: Path) -> str:
                         capture_output=True, text=True)
     if rc.returncode != 0:
         raise RuntimeError(f"binary failed: {rc.stderr}")
-    return out.read_text()
+    return out.read_text(), rc.stdout + rc.stderr
 
 
-def run_tracer(edge: Path, com: Path, out: Path) -> tuple[str, str, str]:
+def tracer_fn(edge: Path, com: Path, work: Path, name: str):
+    out = work / f"{name}_cc_tracer.csv"
+    json_path = work / f"{name}_cc_tracer.json"
     rc = subprocess.run([str(TRACER), str(edge), str(com), str(out)],
                         capture_output=True, text=True)
     if rc.returncode != 0:
         raise RuntimeError(f"tracer failed: {rc.stderr}")
-    return out.read_text(), rc.stdout, rc.stderr
+    json_path.write_text(rc.stdout)
+    return out.read_text(), json_path, rc.stderr
 
 
-def run_js_replay(trace_json: Path, edge: Path, com: Path) -> tuple[bool, str]:
-    rc = subprocess.run(["node", str(JS_REPLAY), str(trace_json),
-                         str(edge), str(com)],
-                        capture_output=True, text=True)
+def replay_fn(json_path: Path, edge: Path, com: Path):
+    rc = subprocess.run(["node", str(JS_REPLAY), str(json_path),
+                         str(edge), str(com)], capture_output=True, text=True)
     return rc.returncode == 0, rc.stdout + rc.stderr
 
 
@@ -86,49 +62,18 @@ def main():
     args = ap.parse_args()
 
     if not BIN.exists():
-        sys.exit(f"missing binary: {BIN}; build first")
-
-    build_tracer()
-
-    fixtures = []
-    # 1. 32-node comdet fixture.
-    work = REPO / "tests" / "cd_verify"
-    work.mkdir(parents=True, exist_ok=True)
-    emit_fixture_inputs(work)
-    fixtures.append(("fixture32", work / "edge.csv", work / "com_gt.csv"))
-    # 2. dnc with leiden-mod input clustering (already staged in cd_verify/).
-    if (work / "dnc_edge.csv").exists() and (work / "dnc_com.csv").exists():
-        fixtures.append(("dnc", work / "dnc_edge.csv", work / "dnc_com.csv"))
+        sys.exit(f"missing binary: {BIN}")
+    D.build_tracer(HERE, TRACER)
+    work = D.workdir(REPO)
+    D.emit_fixture_inputs(REPO, work)
 
     failures = 0
-    for name, edge, com in fixtures:
-        print(f"\n=== {name} ===")
-        canon_out = work / f"{name}_canon.csv"
-        tracer_out = work / f"{name}_tracer.csv"
-        tracer_json = work / f"{name}_tracer.json"
-        canon_csv = run_canonical(edge, com, canon_out)
-        tracer_csv, tracer_stdout, tracer_stderr = run_tracer(edge, com, tracer_out)
-        tracer_json.write_text(tracer_stdout)
-        if args.verbose:
-            print("[tracer trace]")
-            print(tracer_stderr)
-
-        # Leg 1 vs Leg 2: byte-equal CSV.
-        if canon_csv == tracer_csv:
-            print(f"  canonical == tracer: PASS (byte-equal CSV, {len(canon_csv.splitlines())} lines)")
-        else:
-            print(f"  canonical != tracer: FAIL")
-            failures += 1
-
-        # Leg 2 vs Leg 3: JS replay.
-        ok, replay_log = run_js_replay(tracer_json, edge, com)
-        last = replay_log.strip().splitlines()[-1] if replay_log.strip() else "(no output)"
-        if ok:
-            print(f"  tracer == js_replay: PASS ({last})")
-        else:
-            print(f"  tracer != js_replay: FAIL")
-            print(replay_log)
-            failures += 1
+    for name, edge, com in D.fixture_cases(work):
+        failures += D.run_three_legs(
+            name, edge, com, work,
+            canonical_fn=canonical_fn, tracer_fn=tracer_fn, replay_fn=replay_fn,
+            verbose=args.verbose,
+        )
 
     print()
     if failures:

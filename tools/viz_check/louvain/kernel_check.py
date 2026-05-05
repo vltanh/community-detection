@@ -1,15 +1,9 @@
-"""Louvain kernel cross-check driver (level 0 byte-equal trace).
+"""Louvain kernel cross-check driver.
 
-Pipeline:
-
-1. Build instrumented tracer at /tmp/louvain_kernel_check.
-2. Use gen-louvain's `convert` utility to convert edge.csv to the
-   canonical binary graph format (with relabel.txt).
-3. Run /tmp/louvain_kernel_check graph.bin <seed> relabel.txt to get
-   level-0 trace (random_order + per-visit moves + final Q).
-4. Run JS replay (kernel_check.mjs) with the canonical's random_order
-   injected; assert byte-equal per-visit node order + same per-pass
-   move count + Q match within 1e-3 (long-double->double rounding).
+Pipeline: emit fixture -> convert edge.csv to gen-louvain binary
+(via `convert` utility) -> run instrumented tracer with seeded srand
+-> JS replay reads tracer's random_order + per-visit moves, asserts
+byte-equal level-0 trace + Q match.
 
 Run:
     python tools/viz_check/louvain/kernel_check.py [--verbose] [--seed N]
@@ -22,31 +16,17 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-REPO = HERE.parent.parent.parent
+sys.path.insert(0, str(HERE.parent / "_common"))
+import driver as D
+
+REPO = D.repo_root_from_here(HERE)
 TRACER = Path("/tmp/louvain_kernel_check")
 JS_REPLAY = HERE / "kernel_check.mjs"
 CONVERT = REPO / "externals" / "louvain" / "convert"
 
 
-def build_tracer():
-    rc = subprocess.run(["bash", str(HERE / "instrumented" / "build.sh")],
-                        capture_output=True, text=True)
-    if rc.returncode != 0:
-        sys.stderr.write(rc.stdout + rc.stderr)
-        sys.exit(2)
-
-
-def emit_fixture_inputs(out_dir: Path):
-    fixture_emitter = REPO / "tests" / "cd_verify" / "emit_fixture.js"
-    rc = subprocess.run(["node", str(fixture_emitter), str(out_dir)],
-                        capture_output=True, text=True)
-    if rc.returncode != 0:
-        sys.stderr.write(rc.stdout + rc.stderr)
-        sys.exit(2)
-
-
 def convert_to_bin(edge: Path, work: Path):
-    """edge.csv -> louvain.bin + relabel.txt via gen-louvain's `convert`."""
+    """edge.csv -> louvain.bin + relabel.txt via gen-louvain's convert."""
     txt = work / "louvain_edge.txt"
     txt.write_text("\n".join([
         line.replace(",", " ")
@@ -62,20 +42,6 @@ def convert_to_bin(edge: Path, work: Path):
     return binp, relabel
 
 
-def run_tracer(graph_bin: Path, seed: int, relabel: Path) -> tuple[str, str]:
-    rc = subprocess.run([str(TRACER), str(graph_bin), str(seed), str(relabel)],
-                        capture_output=True, text=True)
-    if rc.returncode != 0:
-        raise RuntimeError(f"tracer failed: {rc.stderr}")
-    return rc.stdout, rc.stderr
-
-
-def run_js_replay(trace_json: Path, edge: Path) -> tuple[bool, str]:
-    rc = subprocess.run(["node", str(JS_REPLAY), str(trace_json), str(edge)],
-                        capture_output=True, text=True)
-    return rc.returncode == 0, rc.stdout + rc.stderr
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--verbose", action="store_true")
@@ -84,32 +50,31 @@ def main():
 
     if not CONVERT.exists():
         sys.exit(f"missing convert: {CONVERT}")
-    build_tracer()
-
-    work = REPO / "tests" / "cd_verify"
-    emit_fixture_inputs(work)
-    edge = work / "edge.csv"
-
-    cases = [("fixture32", edge)]
-    if (work / "dnc_edge.csv").exists():
-        cases.append(("dnc", work / "dnc_edge.csv"))
+    D.build_tracer(HERE, TRACER)
+    work = D.workdir(REPO)
+    D.emit_fixture_inputs(REPO, work)
 
     failures = 0
-    for name, e in cases:
+    for name, edge, _com in D.fixture_cases(work):
         print(f"\n=== {name} (seed={args.seed}) ===")
-        graph_bin, relabel = convert_to_bin(e, work)
-        stdout, stderr = run_tracer(graph_bin, args.seed, relabel)
+        graph_bin, relabel = convert_to_bin(edge, work)
+        rc = subprocess.run([str(TRACER), str(graph_bin), str(args.seed), str(relabel)],
+                            capture_output=True, text=True)
+        if rc.returncode != 0:
+            sys.stderr.write(rc.stderr)
+            failures += 1
+            continue
         trace_json = work / f"{name}_louvain_tracer.json"
-        trace_json.write_text(stdout)
+        trace_json.write_text(rc.stdout)
         if args.verbose:
-            print(stderr)
-        ok, log = run_js_replay(trace_json, e)
-        last = log.strip().splitlines()[-1] if log.strip() else "(no output)"
+            print(rc.stderr)
+        ok, log, _err = D.run_capture(["node", str(JS_REPLAY), str(trace_json), str(edge)])
+        last = (log + _err).strip().splitlines()[-1] if (log + _err).strip() else "(no output)"
         if ok:
             print(f"  JS replay vs canonical level-0: PASS ({last})")
         else:
             print(f"  JS replay vs canonical level-0: FAIL")
-            print(log)
+            print(log + _err)
             failures += 1
 
     print()
@@ -119,8 +84,7 @@ def main():
     print("OVERALL: PASS")
     print("\nNOTE: this verifies LEVEL 0 only (RNG-driven random_order +")
     print("per-visit moves byte-equal). Multi-level chain verification is")
-    print("structural-only at the moment; see tracer source for the")
-    print("path to extending to all levels.")
+    print("structural-only; see tracer source for the path to extending.")
 
 
 if __name__ == "__main__":

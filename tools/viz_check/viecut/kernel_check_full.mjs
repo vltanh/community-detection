@@ -65,18 +65,18 @@ function cactusStructureMatches(jsCactus, canonCactus) {
     for (let i = 0; i < jsCv.length; i++) {
       if (jsCv[i] !== canonCv[i]) return `node ${n} contained[${i}]`;
     }
-    const jsAdj = [];
+    // Strict ordered comparison: adjacency sequence must match canonical's
+    // exactly (target,weight per slot). Captures iteration-order divergences
+    // upstream that sorted-multiset comparison would mask.
     const ne = jsCactus.get_first_invalid_edge(n);
+    if (ne !== canonCactus.adj[n].length) return `node ${n} adj length`;
     for (let e = 0; e < ne; e++) {
-      jsAdj.push([jsCactus.getEdgeTarget(n, e), jsCactus.getEdgeWeight(n, e)]);
-    }
-    jsAdj.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
-    const canonAdj = canonCactus.adj[n].map((e) => [e.target, e.weight]);
-    canonAdj.sort((a, b) => (a[0] - b[0]) || (a[1] - b[1]));
-    if (jsAdj.length !== canonAdj.length) return `node ${n} adj length`;
-    for (let i = 0; i < jsAdj.length; i++) {
-      if (jsAdj[i][0] !== canonAdj[i][0] || jsAdj[i][1] !== canonAdj[i][1]) {
-        return `node ${n} adj[${i}]`;
+      const jsT = jsCactus.getEdgeTarget(n, e);
+      const jsW = jsCactus.getEdgeWeight(n, e);
+      const cT = canonCactus.adj[n][e].target;
+      const cW = canonCactus.adj[n][e].weight;
+      if (jsT !== cT || jsW !== cW) {
+        return `node ${n} adj[${e}] js=(${jsT},${jsW}) canon=(${cT},${cW})`;
       }
     }
   }

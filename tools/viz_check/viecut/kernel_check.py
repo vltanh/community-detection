@@ -31,6 +31,7 @@ import driver as D
 
 REPO = D.repo_root_from_here(HERE)
 BIN = REPO / "VieCut" / "build" / "mincut"
+TRACED = Path("/tmp/viecut_traced")
 JS_REPLAY = HERE / "kernel_check.mjs"
 
 
@@ -210,9 +211,23 @@ def per_cluster_3leg(name: str, edge: Path, com: Path, work: Path,
         aggregate_canon.append(f"{tag} {canon_text.replace(chr(10), '|')}")
         aggregate_tracer.append(f"{tag} {tracer_text.replace(chr(10), '|')}")
 
-        # build replay payload
-        cactus = parse_cactus_graphml(cactus_tracer.read_text())
-        bipartition = parse_bipartition(tracer_text, len(nodes))
+        # build replay payload using INTERNAL canonical adj order from
+        # the instrumented binary's stdout JSON (graphml emission only
+        # writes each edge once, so re-parsing it loses adj insertion
+        # order on the second endpoint).
+        if TRACED.exists():
+            rc_t = subprocess.run([str(TRACED), str(metis), "0"],
+                                  capture_output=True, text=True)
+            if rc_t.returncode == 0:
+                tjson = json.loads(rc_t.stdout)
+                cactus = tjson["cactus"]
+                bipartition = tjson["bipartition"]
+            else:
+                cactus = parse_cactus_graphml(cactus_tracer.read_text())
+                bipartition = parse_bipartition(tracer_text, len(nodes))
+        else:
+            cactus = parse_cactus_graphml(cactus_tracer.read_text())
+            bipartition = parse_bipartition(tracer_text, len(nodes))
         cluster_payload = {
             "tag": tag,
             "cluster_id": cid,

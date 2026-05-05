@@ -98,15 +98,14 @@ function canonCPM(resolution) {
       for (let c = 0; c < P.ncomm(); c++) {
         if (P.cnodes(c) === 0) continue;
         const nc = P.csize(c);
-        // libleidenalg's totalWeightInComm[c] for undirected counts
-        // each intra edge twice (once per endpoint) per move_node.
-        // JS LOUVAIN.Partition's totalWeightInComm uses the once-count
-        // convention. Multiply by 2 to align.
-        const w = P.totalWeightInComm(c) * 2;
+        // Post-2026-05-05 louvain.js Partition.totalWeightInComm
+        // uses canonical Modularity inC = 2*intra_c convention
+        // (Modularity::in[c] = 2·intra_c + Σ self-loops, line 21+364
+        // of louvain.js). Halve it to recover libleidenalg's
+        // _total_weight_in_comm[c] = intra_c convention.
+        const w = P.totalWeightInComm(c) / 2;
         const possible = csl ? (nc * nc) : (nc * (nc - 1));
-        // libleidenalg `possible_edges(nc)` for undirected = nc*(nc-1)/2
-        // multiplied by 2 in quality returns gives nc*(nc-1).
-        mod += w / 2 - resolution * possible / 2;  // =  w_orig - res * nc*(nc-1)/2
+        mod += w - resolution * possible / 2;     // intra_c - res*nc*(nc-1)/2
       }
       // CPMVertexPartition::quality returns (2 - directed) * mod = 2 * mod
       return 2 * mod;
@@ -158,7 +157,10 @@ function canonMod() {
       const m = directed ? m_orig : 2.0 * m_orig;
       let mod = 0;
       for (let c = 0; c < P.ncomm(); c++) {
-        const w = P.totalWeightInComm(c);
+        // totalWeightInComm now stores 2*intra_c (canonical Modularity
+        // convention adopted in louvain.js post 2026-05-05). Halve to
+        // recover libleidenalg _total_weight_in_comm = intra_c.
+        const w = P.totalWeightInComm(c) / 2;
         const w_out = P.totalWeightFromComm(c);
         const w_in = P.totalWeightToComm(c);
         mod += w - w_out * w_in / ((directed ? 1.0 : 4.0) * m_orig);

@@ -88,9 +88,11 @@ function canonCPM(resolution) {
       for (let c = 0; c < P.ncomm(); c++) {
         if (P.cnodes(c) === 0) continue;
         const nc = P.csize(c);
-        const w = P.totalWeightInComm(c) * 2;
+        // totalWeightInComm stores 2*intra_c (canonical Modularity
+        // convention in louvain.js); halve to recover intra_c.
+        const w = P.totalWeightInComm(c) / 2;
         const possible = csl ? (nc * nc) : (nc * (nc - 1));
-        mod += w / 2 - resolution * possible / 2;
+        mod += w - resolution * possible / 2;
       }
       return 2 * mod;
     },
@@ -136,7 +138,9 @@ function canonMod() {
       const m = directed ? m_orig : 2.0 * m_orig;
       let mod = 0;
       for (let c = 0; c < P.ncomm(); c++) {
-        const w = P.totalWeightInComm(c);
+        // totalWeightInComm stores 2*intra_c (canonical Modularity
+        // convention in louvain.js); halve to recover intra_c.
+        const w = P.totalWeightInComm(c) / 2;
         const w_out = P.totalWeightFromComm(c);
         const w_in = P.totalWeightToComm(c);
         mod += w - w_out * w_in / ((directed ? 1.0 : 4.0) * m_orig);

@@ -191,6 +191,8 @@ for (let ci = 0; ci < tracer.calls.length; ci++) {
     .filter(v => v.lo.length > 0)
     .map(v => Int32Array.from(v.lo));
   const decisionLog = [];
+  const moveDeltaLog = [];
+  let jsPairPulls = 0;
   try {
     COMDET.INFOMAP_CANON.tryMoveEach(P, activeG, null, {
       visitOrder: Int32Array.from(call.vo),
@@ -199,6 +201,9 @@ for (let ci = 0; ci < tracer.calls.length; ci++) {
       tuneIterationLimit: 0,
       dirty: dirty,
       onVisit: (v, moved, newM, L) => decisionLog.push({ v, moved, newM, L }),
+      onMoveDeltas: (v, oldM, newM, oDE, oDX, nDE, nDX) =>
+        moveDeltaLog.push({ v, oldM, newM, oDE, oDX, nDE, nDX }),
+      onPairPull: (v, w, oldM, newM) => { jsPairPulls += 1; },
     });
   } catch (err) {
     console.log(`call ${ci} (level ${call.l}, fl=${!!call.fl}, ${call.visits.length} visits) failed: ${err.message}`);
@@ -228,7 +233,7 @@ for (let ci = 0; ci < tracer.calls.length; ci++) {
     }
     if (dL > 0 && globalThis.__firstDriftReported === undefined) {
       globalThis.__firstDriftReported = true;
-      console.log(`  first-drift call ${ci} (level ${call.l}) visit ${k} v=${cn.v}: js.L=${js.L.toFixed(20)}  trace.L=${cn.L.toFixed(20)}  ΔL=${dL.toExponential(3)}`);
+      console.log(`  first-drift call ${ci} (level ${call.l}) visit ${k} v=${cn.v}: ΔL=${dL.toExponential(3)}`);
     }
     levelVisitCount += 1;
     totalVisits += 1;

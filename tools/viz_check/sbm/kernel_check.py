@@ -1,0 +1,178 @@
+"""SBM flat-variant kernel cross-check driver.
+
+Three legs (per cd_tracer_pattern.md):
+
+  1. Canonical (Python). Builds a graph-tool BlockState (DC/NDC) at the
+     trace's init partition and asserts state.entropy(...) matches the
+     instrumented C++ leg's S_init within 1e-10 relative. PP recomputes
+     the JS Bernoulli-2-rate formula in Python (graph-tool's PPBlockState
+     is the degree-corrected PP variant; not the same model class).
+
+  2. Instrumented C++ (`/tmp/sbm_flat_kernel_check --mode={dc,ndc,pp}`).
+     Implements the JS port's mcmc_sweep semantics (uniform proposal at
+     c->infty, single-vertex MH, exact microcanonical entropy) under
+     std::mt19937 seeded by --seed. Emits a per-visit JSON trace.
+
+  3. JS replay (`kernel_check.mjs`). Applies the cpp trace's per-visit
+     (toS, accept) sequence to comdet/js/sbm via opts.proposalOracle +
+     opts.visitOrder, byte-equal vs cpp.
+
+The bar is leg 2 <-> leg 3 byte-equal (trace + final partition). Leg 1
+gives a structural anchor: the entropy formula matches graph-tool at
+the same partition for DC/NDC, and matches a Python recompute of the
+JS formula for PP (Zhang+Peixoto 2020 microcanonical Bernoulli).
+
+Variants -> underlying mode(s):
+
+  flat-{dc,ndc,pp}   -> single mode
+  nested-{dc,ndc}    -> same kernel as flat at level 0 (per JS port)
+  flat-best          -> all 3 single-mode kernels in turn
+  nested-best        -> dc + ndc kernels in turn
+
+Run:
+    python tools/viz_check/sbm/kernel_check.py [--verbose]
+                                               [--variant flat-dc | ... | nested-best]
+                                               [--seed N] [--sweeps K]
+                                               [--no-canonical-check]
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "_common"))
+import driver as D
+
+REPO = D.repo_root_from_here(HERE)
+TRACER = Path("/tmp/sbm_flat_kernel_check")
+JS_REPLAY = HERE / "kernel_check.mjs"
+ENTROPY_CHECK = HERE / "entropy_check.py"
+
+CONDA_ENV = os.environ.get("SBM_CONDA_ENV", "nwbench")
+
+VARIANT_TO_MODES = {
+    "flat-dc":     ["dc"],
+    "flat-ndc":    ["ndc"],
+    "flat-pp":     ["pp"],
+    "nested-dc":   ["dc"],
+    "nested-ndc":  ["ndc"],
+    "flat-best":   ["dc", "ndc", "pp"],
+    "nested-best": ["dc", "ndc"],
+}
+
+
+def run_canonical_check(edge: Path, com: Path, mode: str, S_cpp: float,
+                        verbose: bool = False) -> tuple[bool, str]:
+    cmd = ["conda", "run", "-n", CONDA_ENV, "python",
+           str(ENTROPY_CHECK), "--edge", str(edge), "--init", str(com),
+           "--mode", mode, "--cpp-S", str(S_cpp)]
+    rc = subprocess.run(cmd, capture_output=True, text=True)
+    if verbose:
+        sys.stderr.write(rc.stdout + rc.stderr)
+    return rc.returncode == 0, rc.stdout + rc.stderr
+
+
+def run_one(name: str, edge: Path, com: Path, work: Path,
+            variant_label: str, mode: str, args) -> int:
+    print(f"\n=== {name} (variant={variant_label}, mode={mode}, "
+          f"seed={args.seed}, sweeps={args.sweeps}) ===")
+    failures = 0
+    out_json = work / f"{name}_sbm_{variant_label}_{mode}_tracer.json"
+
+    # Leg B: instrumented C++ tracer.
+    rc = subprocess.run([str(TRACER),
+                         f"--mode={mode}",
+                         f"--edge={edge}",
+                         f"--init={com}",
+                         f"--seed={args.seed}",
+                         f"--sweeps={args.sweeps}"],
+                        capture_output=True, text=True)
+    if rc.returncode != 0:
+        sys.stderr.write(rc.stdout + rc.stderr)
+        return 1
+    out_json.write_text(rc.stdout)
+    if args.verbose:
+        sys.stderr.write(rc.stderr)
+
+    trace = json.loads(out_json.read_text())
+    S_init = trace["S_init"]
+    S_final = trace["S_final"]
+    Bne_init = trace["Bne_init"]
+    Bne_final = trace["Bne_final"]
+    accepted = trace["accepted_total"]
+    print(f"  cpp tracer: S_init={S_init:.6f} S_final={S_final:.6f} "
+          f"Bne {Bne_init}->{Bne_final} accepted={accepted}/{args.sweeps * trace['n']}")
+
+    # Leg A (optional): graph-tool / Python entropy-at-fixed-partition.
+    if not args.no_canonical_check and ENTROPY_CHECK.exists():
+        ok, log = run_canonical_check(edge, com, mode, S_init,
+                                      verbose=args.verbose)
+        last = log.strip().splitlines()[-1] if log.strip() else "(no output)"
+        if ok:
+            print(f"  canonical S_init match: PASS ({last})")
+        else:
+            print(f"  canonical S_init match: FAIL ({last})")
+            if args.verbose:
+                print(log)
+            failures += 1
+
+    # Leg C: JS replay byte-equal.
+    ok, log, err = D.run_capture(["node", str(JS_REPLAY),
+                                   str(out_json), str(edge), mode])
+    last = (log + err).strip().splitlines()[-1] if (log + err).strip() else "(no output)"
+    if ok:
+        print(f"  cpp == js_replay: PASS ({last})")
+    else:
+        print(f"  cpp != js_replay: FAIL")
+        print(log + err)
+        failures += 1
+    return failures
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--mode", default=None, choices=["dc", "ndc", "pp"],
+                    help="single-mode shortcut (alias for --variant=flat-<mode>)")
+    ap.add_argument("--variant", default=None,
+                    choices=list(VARIANT_TO_MODES.keys()),
+                    help="page variant; expands to one or more underlying kernel modes")
+    ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--sweeps", type=int, default=20)
+    ap.add_argument("--no-canonical-check", action="store_true",
+                    help="skip the graph-tool entropy-at-fixed-partition leg")
+    args = ap.parse_args()
+
+    if args.variant and args.mode:
+        sys.exit("specify --variant OR --mode, not both")
+    if args.mode:
+        variant_label = f"flat-{args.mode}"
+        modes = [args.mode]
+    else:
+        variant = args.variant or "flat-dc"
+        variant_label = variant
+        modes = VARIANT_TO_MODES[variant]
+
+    D.build_tracer(HERE, TRACER)
+    work = D.workdir(REPO)
+    D.emit_fixture_inputs(REPO, work)
+
+    failures = 0
+    for name, edge, com in D.fixture_cases(work):
+        for mode in modes:
+            failures += run_one(name, edge, com, work, variant_label, mode, args)
+
+    print()
+    if failures:
+        print(f"OVERALL: FAIL ({failures} failures)")
+        sys.exit(1)
+    print("OVERALL: PASS")
+
+
+if __name__ == "__main__":
+    main()

@@ -429,8 +429,14 @@ struct BlockState {
     inline double safelog(double x) const { return x > 0.0 ? jsLog(x) : 0.0; }
 
     // log binom(n, k) = lgamma(n+1) - lgamma(k+1) - lgamma(n-k+1).
+    // Mirror comdet/js/sbm/util.js:lbinom early-return for k==0 || k==n;
+    // the Lanczos approximation of lgamma(1) is not exactly 0, so
+    // computing the formula on n=k yields -jsLgamma(1) instead of 0,
+    // breaking bit-equal vs JS at "open new block" virtualMove edges
+    // where logChooseRep(1, 2) = lbinom(2, 2) sits in degreeDlSubset.
     double lbinom(double n, double k) const {
         if (n < 0.0 || k < 0.0 || k > n) return 0.0;
+        if (k == 0.0 || k == n) return 0.0;
         return jsLgamma(n + 1.0) - jsLgamma(k + 1.0) - jsLgamma(n - k + 1.0);
     }
     // logChooseRep(n,k) = log C(n+k-1, k), stars-and-bars.

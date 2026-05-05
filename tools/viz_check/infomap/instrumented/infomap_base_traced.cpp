@@ -141,6 +141,9 @@ struct InfomapTraceVisit {
   double exit_log_exit = 0.0;
   double flow_log_flow = 0.0;
   double nodeFlow_log_nodeFlow = 0.0;
+  double enterFlow_log_enterFlow = 0.0;
+  double exitNetworkFlow = 0.0;
+  double exitNetworkFlow_log_exitNetworkFlow = 0.0;
   // [TRACE-IM] per-move probe (only valid when moved == true).
   // Captures m_moduleFlowData[oldM/newM].enterFlow + .exitFlow + .flow
   // at TWO timestamps:
@@ -284,7 +287,10 @@ void traceVisitAfter(InfomapBase& base,
                      double L_index, double L_module,
                      double enterFlow, double enter_log_enter,
                      double exit_log_exit, double flow_log_flow,
-                     double nodeFlow_log_nodeFlow)
+                     double nodeFlow_log_nodeFlow,
+                     double enterFlow_log_enterFlow,
+                     double exitNetworkFlow,
+                     double exitNetworkFlow_log_exitNetworkFlow)
 {
   if (g_infomap_trace.calls.empty()) return;
   auto& call = g_infomap_trace.calls.back();
@@ -301,6 +307,9 @@ void traceVisitAfter(InfomapBase& base,
   vt.exit_log_exit = exit_log_exit;
   vt.flow_log_flow = flow_log_flow;
   vt.nodeFlow_log_nodeFlow = nodeFlow_log_nodeFlow;
+  vt.enterFlow_log_enterFlow = enterFlow_log_enterFlow;
+  vt.exitNetworkFlow = exitNetworkFlow;
+  vt.exitNetworkFlow_log_exitNetworkFlow = exitNetworkFlow_log_exitNetworkFlow;
   call.visits.push_back(std::move(vt));
 }
 

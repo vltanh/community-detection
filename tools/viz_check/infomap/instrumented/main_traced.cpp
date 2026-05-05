@@ -71,6 +71,9 @@ struct InfomapTraceVisit {
     double exit_log_exit = 0.0;
     double flow_log_flow = 0.0;
     double nodeFlow_log_nodeFlow = 0.0;
+    double enterFlow_log_enterFlow = 0.0;
+    double exitNetworkFlow = 0.0;
+    double exitNetworkFlow_log_exitNetworkFlow = 0.0;
     unsigned int oldM = 0;
     double oldM_enter_pre = 0.0, oldM_exit_pre = 0.0, oldM_flow_pre = 0.0;
     double newM_enter_pre = 0.0, newM_exit_pre = 0.0, newM_flow_pre = 0.0;
@@ -355,6 +358,9 @@ int main(int argc, char** argv) {
                       << ",\"xle\":" << v.exit_log_exit
                       << ",\"fle\":" << v.flow_log_flow
                       << ",\"nfle\":" << v.nodeFlow_log_nodeFlow
+                      << ",\"eflnef\":" << v.enterFlow_log_enterFlow
+                      << ",\"exnf\":" << v.exitNetworkFlow
+                      << ",\"exfle\":" << v.exitNetworkFlow_log_exitNetworkFlow
                       << ",\"oM\":" << v.oldM
                       << ",\"oMe0\":" << v.oldM_enter_pre
                       << ",\"oMx0\":" << v.oldM_exit_pre

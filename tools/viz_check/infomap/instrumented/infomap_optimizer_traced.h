@@ -43,6 +43,9 @@ template <typename Obj> inline double probeEnterLogEnter(const Obj& obj)     { r
 template <typename Obj> inline double probeExitLogExit(const Obj& obj)       { return probeField(obj, 5); }
 template <typename Obj> inline double probeFlowLogFlow(const Obj& obj)       { return probeField(obj, 4); }
 template <typename Obj> inline double probeNodeFlowLogNodeFlow(const Obj& obj) { return probeField(obj, 3); }
+template <typename Obj> inline double probeEnterFlowLogEnterFlow(const Obj& obj) { return probeField(obj, 8); }
+template <typename Obj> inline double probeExitNetworkFlow(const Obj& obj) { return probeField(obj, 9); }
+template <typename Obj> inline double probeExitNetworkFlowLogExitNetworkFlow(const Obj& obj) { return probeField(obj, 10); }
 
 // Per-move trace + per-level seed snapshots written by infomap_base_traced.cpp.
 // Hooks in initPartition / moveNodeToPredefinedModule below call these.
@@ -62,7 +65,10 @@ extern void traceVisitAfter(InfomapBase& base,
                              double L_index, double L_module,
                              double enterFlow, double enter_log_enter,
                              double exit_log_exit, double flow_log_flow,
-                             double nodeFlow_log_nodeFlow);
+                             double nodeFlow_log_nodeFlow,
+                             double enterFlow_log_enterFlow,
+                             double exitNetworkFlow,
+                             double exitNetworkFlow_log_exitNetworkFlow);
 extern void tracePredefinedModules(
     InfomapBase& base, const std::vector<unsigned int>& modules);
 extern void traceMoveProbe(unsigned int oldM,
@@ -398,7 +404,10 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
                       probeEnterLogEnter(m_objective),
                       probeExitLogExit(m_objective),
                       probeFlowLogFlow(m_objective),
-                      probeNodeFlowLogNodeFlow(m_objective));
+                      probeNodeFlowLogNodeFlow(m_objective),
+                      probeEnterFlowLogEnterFlow(m_objective),
+                      probeExitNetworkFlow(m_objective),
+                      probeExitNetworkFlowLogExitNetworkFlow(m_objective));
       continue;
     }
 
@@ -412,7 +421,10 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
                       probeEnterLogEnter(m_objective),
                       probeExitLogExit(m_objective),
                       probeFlowLogFlow(m_objective),
-                      probeNodeFlowLogNodeFlow(m_objective));
+                      probeNodeFlowLogNodeFlow(m_objective),
+                      probeEnterFlowLogEnterFlow(m_objective),
+                      probeExitNetworkFlow(m_objective),
+                      probeExitNetworkFlowLogExitNetworkFlow(m_objective));
       continue;
     }
 
@@ -602,7 +614,10 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
                       probeEnterLogEnter(m_objective),
                       probeExitLogExit(m_objective),
                       probeFlowLogFlow(m_objective),
-                      probeNodeFlowLogNodeFlow(m_objective));
+                      probeNodeFlowLogNodeFlow(m_objective),
+                      probeEnterFlowLogEnterFlow(m_objective),
+                      probeExitNetworkFlow(m_objective),
+                      probeExitNetworkFlowLogExitNetworkFlow(m_objective));
       // [TRACE-IM] per-move probe (pre + post m_moduleFlowData values).
       traceMoveProbe(_probe_oldM,
                      _probe_oldM_enter_pre, _probe_oldM_exit_pre, _probe_oldM_flow_pre,
@@ -623,7 +638,10 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
                       probeEnterLogEnter(m_objective),
                       probeExitLogExit(m_objective),
                       probeFlowLogFlow(m_objective),
-                      probeNodeFlowLogNodeFlow(m_objective));
+                      probeNodeFlowLogNodeFlow(m_objective),
+                      probeEnterFlowLogEnterFlow(m_objective),
+                      probeExitNetworkFlow(m_objective),
+                      probeExitNetworkFlowLogExitNetworkFlow(m_objective));
     }
   }
 

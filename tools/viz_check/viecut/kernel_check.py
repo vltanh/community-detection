@@ -249,13 +249,28 @@ def per_cluster_3leg(name: str, edge: Path, com: Path, work: Path,
     rc = subprocess.run(["node", str(JS_REPLAY), str(json_path)],
                         capture_output=True, text=True)
     if rc.returncode == 0:
-        print(f"  [{name}] tracer == js_replay: PASS ({runs} clusters)")
+        print(f"  [{name}] tracer == js_replay (DFS-only): PASS ({runs} clusters)")
         if verbose:
             print(rc.stdout)
     else:
-        print(f"  [{name}] tracer != js_replay: FAIL")
+        print(f"  [{name}] tracer != js_replay (DFS-only): FAIL")
         print(rc.stdout)
         print(rc.stderr)
+        fails += 1
+
+    # Full JS cactus build (Phase B-2): JS reads METIS files + builds
+    # cactus from scratch + asserts cut value + bipartition.
+    js_full = HERE / "kernel_check_full.mjs"
+    rc2 = subprocess.run(["node", str(js_full), str(json_path)],
+                         capture_output=True, text=True)
+    if rc2.returncode == 0:
+        print(f"  [{name}] tracer == js_full_build: PASS ({runs} clusters)")
+        if verbose:
+            print(rc2.stdout)
+    else:
+        print(f"  [{name}] tracer != js_full_build: FAIL")
+        print(rc2.stdout)
+        print(rc2.stderr)
         fails += 1
     return runs, fails, skipped
 

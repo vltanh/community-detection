@@ -137,6 +137,10 @@ struct InfomapTraceVisit {
   double L_index = 0.0;
   double L_module = 0.0;
   double enterFlow = 0.0;
+  double enter_log_enter = 0.0;
+  double exit_log_exit = 0.0;
+  double flow_log_flow = 0.0;
+  double nodeFlow_log_nodeFlow = 0.0;
 };
 
 struct InfomapTraceCall {
@@ -251,7 +255,9 @@ void traceVisitAfter(InfomapBase& base,
                      const std::vector<unsigned int>& linkOrder,
                      bool moved, unsigned int newM,
                      double L_index, double L_module,
-                     double enterFlow)
+                     double enterFlow, double enter_log_enter,
+                     double exit_log_exit, double flow_log_flow,
+                     double nodeFlow_log_nodeFlow)
 {
   if (g_infomap_trace.calls.empty()) return;
   auto& call = g_infomap_trace.calls.back();
@@ -264,6 +270,10 @@ void traceVisitAfter(InfomapBase& base,
   vt.L_index = L_index;
   vt.L_module = L_module;
   vt.enterFlow = enterFlow;
+  vt.enter_log_enter = enter_log_enter;
+  vt.exit_log_exit = exit_log_exit;
+  vt.flow_log_flow = flow_log_flow;
+  vt.nodeFlow_log_nodeFlow = nodeFlow_log_nodeFlow;
   call.visits.push_back(std::move(vt));
 }
 

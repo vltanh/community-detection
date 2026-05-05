@@ -22,19 +22,25 @@
 
 namespace infomap {
 
-// Probe MapEquation's protected `enterFlow` accumulator from outside
-// the class. MapEquation has a virtual destructor (8-byte vtable
-// pointer at offset 0), then three public doubles (codelength,
-// indexCodelength, moduleCodelength), four protected doubles
-// (nodeFlow_log_nodeFlow, flow_log_flow, exit_log_exit, enter_log_enter),
-// and enterFlow at relative offset vtable + 7*8 = 8 + 56 = 64 bytes.
-// Single inheritance keeps the base subobject at offset 0, so this
-// works for every derived MapEquation specialization.
+// Probe MapEquation's protected accumulators from outside the class.
+// Layout: vtable_ptr [0..7], then 11 doubles in declared order:
+//   [8] codelength, [16] indexCodelength, [24] moduleCodelength
+//   [32] nodeFlow_log_nodeFlow, [40] flow_log_flow,
+//   [48] exit_log_exit, [56] enter_log_enter, [64] enterFlow,
+//   [72] enterFlow_log_enterFlow, [80] exitNetworkFlow,
+//   [88] exitNetworkFlow_log_exitNetworkFlow.
+// Single inheritance + same layout for every derived specialization.
 template <typename Obj>
-inline double probeEnterFlow(const Obj& obj) {
+inline double probeField(const Obj& obj, size_t double_idx) {
   return *reinterpret_cast<const double*>(
-      reinterpret_cast<const char*>(&obj) + sizeof(void*) + 7 * sizeof(double));
+      reinterpret_cast<const char*>(&obj) + sizeof(void*)
+      + double_idx * sizeof(double));
 }
+template <typename Obj> inline double probeEnterFlow(const Obj& obj)        { return probeField(obj, 7); }
+template <typename Obj> inline double probeEnterLogEnter(const Obj& obj)     { return probeField(obj, 6); }
+template <typename Obj> inline double probeExitLogExit(const Obj& obj)       { return probeField(obj, 5); }
+template <typename Obj> inline double probeFlowLogFlow(const Obj& obj)       { return probeField(obj, 4); }
+template <typename Obj> inline double probeNodeFlowLogNodeFlow(const Obj& obj) { return probeField(obj, 3); }
 
 // Per-move trace + per-level seed snapshots written by infomap_base_traced.cpp.
 // Hooks in initPartition / moveNodeToPredefinedModule below call these.
@@ -51,7 +57,9 @@ extern void traceVisitAfter(InfomapBase& base,
                              const std::vector<unsigned int>& linkOrder,
                              bool moved, unsigned int newM,
                              double L_index, double L_module,
-                             double enterFlow);
+                             double enterFlow, double enter_log_enter,
+                             double exit_log_exit, double flow_log_flow,
+                             double nodeFlow_log_nodeFlow);
 extern void tracePredefinedModules(
     InfomapBase& base, const std::vector<unsigned int>& modules);
 }
@@ -363,7 +371,11 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
       traceVisitAfter(*m_infomap, nodeEnumeration[i],
                       std::vector<unsigned int>(), false, current.index,
                       m_objective.indexCodelength, m_objective.moduleCodelength,
-                      probeEnterFlow(m_objective));
+                      probeEnterFlow(m_objective),
+                      probeEnterLogEnter(m_objective),
+                      probeExitLogExit(m_objective),
+                      probeFlowLogFlow(m_objective),
+                      probeNodeFlowLogNodeFlow(m_objective));
       continue;
     }
 
@@ -373,7 +385,11 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
       traceVisitAfter(*m_infomap, nodeEnumeration[i],
                       std::vector<unsigned int>(), false, current.index,
                       m_objective.indexCodelength, m_objective.moduleCodelength,
-                      probeEnterFlow(m_objective));
+                      probeEnterFlow(m_objective),
+                      probeEnterLogEnter(m_objective),
+                      probeExitLogExit(m_objective),
+                      probeFlowLogFlow(m_objective),
+                      probeNodeFlowLogNodeFlow(m_objective));
       continue;
     }
 
@@ -533,14 +549,22 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
       traceVisitAfter(*m_infomap, nodeEnumeration[i], moduleEnumeration,
                       true, bestModuleIndex,
                       m_objective.indexCodelength, m_objective.moduleCodelength,
-                      probeEnterFlow(m_objective));
+                      probeEnterFlow(m_objective),
+                      probeEnterLogEnter(m_objective),
+                      probeExitLogExit(m_objective),
+                      probeFlowLogFlow(m_objective),
+                      probeNodeFlowLogNodeFlow(m_objective));
     } else {
       current.dirty = false;
       // [TRACE-IM] visit evaluated all candidates + decided to stay.
       traceVisitAfter(*m_infomap, nodeEnumeration[i], moduleEnumeration,
                       false, current.index,
                       m_objective.indexCodelength, m_objective.moduleCodelength,
-                      probeEnterFlow(m_objective));
+                      probeEnterFlow(m_objective),
+                      probeEnterLogEnter(m_objective),
+                      probeExitLogExit(m_objective),
+                      probeFlowLogFlow(m_objective),
+                      probeNodeFlowLogNodeFlow(m_objective));
     }
   }
 

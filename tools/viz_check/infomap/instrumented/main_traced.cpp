@@ -67,6 +67,10 @@ struct InfomapTraceVisit {
     double L_index = 0.0;
     double L_module = 0.0;
     double enterFlow = 0.0;
+    double enter_log_enter = 0.0;
+    double exit_log_exit = 0.0;
+    double flow_log_flow = 0.0;
+    double nodeFlow_log_nodeFlow = 0.0;
 };
 struct InfomapTraceCall {
     int level_idx = -1;
@@ -334,7 +338,11 @@ int main(int argc, char** argv) {
                       << ",\"L\":" << v.L_after
                       << ",\"Li\":" << v.L_index
                       << ",\"Lm\":" << v.L_module
-                      << ",\"ef\":" << v.enterFlow << "}";
+                      << ",\"ef\":" << v.enterFlow
+                      << ",\"ele\":" << v.enter_log_enter
+                      << ",\"xle\":" << v.exit_log_exit
+                      << ",\"fle\":" << v.flow_log_flow
+                      << ",\"nfle\":" << v.nodeFlow_log_nodeFlow << "}";
         }
         std::cout << "]}";
     }

@@ -177,12 +177,31 @@ for (let ci = 0; ci < tracer.calls.length; ci++) {
       console.log(`level ${call.l} init_L mismatch: js=${P.codelength()}  trace=${level.init_L}  Δ=${initDelta.toExponential(3)}`);
       levelPass = false;
     }
+    // Reset deltas oracle cursor at level boundary. trace.moves at
+    // this level contains every traceMoveAfter event in temporal
+    // order: predefined-modules moves first (consumed by
+    // applyMembership), then per-tryMoveEach primary + pair-pull
+    // moves (consumed by tryMoveEach). Single shared cursor through
+    // the level's move stream.
+    globalThis.__deltaOracleMoves = tracer.moves.filter(mv => mv.l === call.l);
+    globalThis.__deltaOracleIdx = 0;
+    const levelOracle = {
+      next() {
+        const moves = globalThis.__deltaOracleMoves;
+        if (globalThis.__deltaOracleIdx >= moves.length) return null;
+        const mv = moves[globalThis.__deltaOracleIdx++];
+        return { oDE: mv.oDE, oDX: mv.oDX, nDE: mv.nDE, nDX: mv.nDX };
+      },
+    };
+    globalThis.__levelOracle = levelOracle;
     // If this level had a moveActiveNodesToPredefinedModules call
     // between initPartition and optimizeActiveNetwork (fineTune /
     // coarseTune do this), apply the predefined-modules vector AFTER
     // the singleton init_L check and BEFORE the level's tryMoveEach.
     if (level.predef && level.predef.length === activeG.n) {
-      COMDET.INFOMAP_CANON.applyMembership(P, activeG, level.predef);
+      COMDET.INFOMAP_CANON.applyMembership(P, activeG, level.predef, {
+        deltasOracle: levelOracle,
+      });
     }
     dirty = new Int8Array(activeG.n);
     for (let i = 0; i < activeG.n; i++) dirty[i] = 1;
@@ -193,6 +212,10 @@ for (let ci = 0; ci < tracer.calls.length; ci++) {
   const decisionLog = [];
   const moveDeltaLog = [];
   let jsPairPulls = 0;
+  // Reuse the level-boundary oracle (created above when call.l
+  // changed). Cursor persists across all tryMoveEach calls in this
+  // level + the optional applyMembership that preceded them.
+  const deltasOracle = globalThis.__levelOracle;
   try {
     COMDET.INFOMAP_CANON.tryMoveEach(P, activeG, null, {
       visitOrder: Int32Array.from(call.vo),
@@ -200,10 +223,11 @@ for (let ci = 0; ci < tracer.calls.length; ci++) {
       isFirstLoop: !!call.fl,
       tuneIterationLimit: 0,
       dirty: dirty,
-      onVisit: (v, moved, newM, L, Li, Lm, ef) => decisionLog.push({ v, moved, newM, L, Li, Lm, ef }),
+      onVisit: (v, moved, newM, L, Li, Lm, ef, ele, xle, fle, nfle) => decisionLog.push({ v, moved, newM, L, Li, Lm, ef, ele, xle, fle, nfle }),
       onMoveDeltas: (v, oldM, newM, oDE, oDX, nDE, nDX) =>
         moveDeltaLog.push({ v, oldM, newM, oDE, oDX, nDE, nDX }),
       onPairPull: (v, w, oldM, newM) => { jsPairPulls += 1; },
+      deltasOracle: deltasOracle,
     });
   } catch (err) {
     console.log(`call ${ci} (level ${call.l}, fl=${!!call.fl}, ${call.visits.length} visits) failed: ${err.message}`);
@@ -239,15 +263,21 @@ for (let ci = 0; ci < tracer.calls.length; ci++) {
       console.log(`  first-L-drift call ${ci} (level ${call.l}) visit ${k} v=${cn.v}: ΔL=${dL.toExponential(3)}  ΔL_index=${dLi.toExponential(3)}  ΔL_module=${dLm.toExponential(3)}  ΔenterFlow=${dEF.toExponential(3)}`);
       console.log(`    js ef=${js.ef.toFixed(20)}  trace ef=${cn.ef.toFixed(20)}`);
     }
-    if (Math.abs(js.ef - cn.ef) > 0 && globalThis.__firstEfDriftReported === undefined) {
-      globalThis.__firstEfDriftReported = true;
-      const dEF = Math.abs(js.ef - cn.ef);
-      console.log(`  first-EF-drift call ${ci} (level ${call.l}) visit ${k} v=${cn.v}: ΔenterFlow=${dEF.toExponential(3)}  js=${js.ef.toFixed(20)}  trace=${cn.ef.toFixed(20)}`);
-      // Dump previous visit's enterFlow on both sides.
-      if (k > 0) {
-        const prev_js = decisionLog[k - 1];
-        const prev_cn = call.visits[k - 1];
-        console.log(`    prev visit (${k-1}, v=${prev_cn.v}): js.ef=${prev_js.ef.toFixed(20)}  trace.ef=${prev_cn.ef.toFixed(20)}  match=${prev_js.ef === prev_cn.ef}`);
+    // Per-accumulator first-drift report. Each accumulator tracked
+    // separately so we can localize WHICH FP op produced the divergence.
+    const accs = [
+      ['enterFlow',            'ef',   js.ef,   cn.ef],
+      ['enter_log_enter',      'ele',  js.ele,  cn.ele],
+      ['exit_log_exit',        'xle',  js.xle,  cn.xle],
+      ['flow_log_flow',        'fle',  js.fle,  cn.fle],
+      ['nodeFlow_log_nodeFlow','nfle', js.nfle, cn.nfle],
+    ];
+    for (const [name, _key, jv, cv] of accs) {
+      const flag = `__firstDrift_${name}`;
+      if (globalThis[flag] === undefined && jv !== cv) {
+        globalThis[flag] = true;
+        const d = Math.abs(jv - cv);
+        console.log(`  first-${name}-drift call ${ci} (level ${call.l}) visit ${k} v=${cn.v}: Δ=${d.toExponential(3)}  js=${jv.toFixed(20)}  trace=${cv.toFixed(20)}`);
       }
     }
     levelVisitCount += 1;

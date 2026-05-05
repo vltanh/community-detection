@@ -364,24 +364,23 @@ struct BlockState {
         return logChooseRep(NB, E);
     }
     double partitionDl() const {
+        std::vector<int> ne = sortedNonEmpty();
         double S = std::lgamma((double)N + 1.0);
-        for (int i = 0; i < Bne; ++i) S -= std::lgamma((double)nr[neList[i]] + 1.0);
+        for (int r : ne) S -= std::lgamma((double)nr[r] + 1.0);
         S += lbinom((double)N - 1.0, (double)Bne - 1.0) + std::log((double)N);
         return S;
     }
     double degreeDlUniform() const {
+        std::vector<int> ne = sortedNonEmpty();
         double S = 0.0;
-        for (int i = 0; i < Bne; ++i) {
-            int r = neList[i];
-            S += logChooseRep((double)nr[r], std::round(er[r]));
-        }
+        for (int r : ne) S += logChooseRep((double)nr[r], std::round(er[r]));
         return S;
     }
     double ppLikelihood() const {
+        std::vector<int> ne = sortedNonEmpty();
         double Ein2 = 0.0, Min = 0.0;
         int nTot = 0;
-        for (int i = 0; i < Bne; ++i) {
-            int r = neList[i];
+        for (int r : ne) {
             Ein2 += ers[(size_t)r * B + r];
             Min += (double)nr[r] * (nr[r] - 1) / 2.0;
             nTot += nr[r];
@@ -396,11 +395,9 @@ struct BlockState {
         return S;
     }
     double ppEdgesDl() const {
+        std::vector<int> ne = sortedNonEmpty();
         double Min = 0.0;
-        for (int i = 0; i < Bne; ++i) {
-            int r = neList[i];
-            Min += (double)nr[r] * (nr[r] - 1) / 2.0;
-        }
+        for (int r : ne) Min += (double)nr[r] * (nr[r] - 1) / 2.0;
         return std::log(std::min(E, Min) + 1.0);
     }
 
@@ -419,9 +416,12 @@ struct BlockState {
     }
 
     // Subset entropy: sum of vterm/eterm entries that involve r or s.
-    // Iterates neList[0..Bne-1] for the cross-block eterms - on dnc
-    // B=N=906 but Bne stays ~30, so virtualMove drops from ~2B to
-    // ~2*Bne lgamma calls.
+    // Iterates the sorted neList prefix for the cross-block eterms;
+    // on dnc B=N=906 but Bne stays ~30, so virtualMove drops from
+    // ~2B to ~2*Bne lgamma calls. Sorting (vs raw admin-order) keeps
+    // the summation order id-ascending, which matches the pre-cache
+    // version that walked t=0..B-1 - dS values stay byte-equal across
+    // the refactor and the exploration sequence is preserved.
     double subsetEntropy(int r, int s) const {
         double S = 0.0;
         if (nr[r] > 0) S += (mode == Mode::DC) ? std::lgamma(er[r] + 1.0) : er[r] * safelog((double)nr[r]);
@@ -435,8 +435,9 @@ struct BlockState {
             S -= e_ss_half * LOG2 + std::lgamma(e_ss_half + 1.0);
         }
         if (r != s) S -= std::lgamma(ers[(size_t)r * B + s] + 1.0);
-        for (int i = 0; i < Bne; ++i) {
-            int t = neList[i];
+        std::vector<int> ne = sortedNonEmpty();
+        for (size_t i = 0; i < ne.size(); ++i) {
+            int t = ne[i];
             if (t == r || t == s) continue;
             S -= std::lgamma(ers[(size_t)r * B + t] + 1.0);
             S -= std::lgamma(ers[(size_t)s * B + t] + 1.0);

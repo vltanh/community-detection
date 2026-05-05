@@ -22,6 +22,7 @@ struct LeidenTracePass {
     std::vector<LeidenTraceMove> moves;
     double total_improv;
     size_t nb_moves;
+    std::vector<size_t> post_membership;       // POST-renumber membership
 };
 struct LeidenTrace {
     std::vector<LeidenTracePass> passes;
@@ -802,6 +803,13 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
   // [TRACE-LD] Capture pass-end totals (move_nodes return path).
   gTrace.passes[pass_idx].total_improv = total_improv;
   gTrace.passes[pass_idx].nb_moves = nb_moves;
+  // Capture POST-renumber membership so JS replay can synchronize.
+  // (libleidenalg's renumber_communities runs at line 791 below before
+  // we return.) Use the public membership() accessor.
+  {
+    auto const& mem = partitions[0]->membership();
+    gTrace.passes[pass_idx].post_membership.assign(mem.begin(), mem.end());
+  }
   fprintf(stderr, "[TRACE-LD] PASS_END pass=%zu nb_moves=%zu improv=%.6f visits=%zu\n",
           pass_idx, nb_moves, total_improv, gTrace.passes[pass_idx].moves.size());
   return total_improv;

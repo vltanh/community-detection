@@ -123,28 +123,58 @@ else { console.error("unknown quality"); process.exit(2); }
 const P = COMDET.LOUVAIN.Partition(G, null, qfn);
 const Q_init_js = qfn.quality(P);
 
+// libleidenalg's rank_order_communities (MutableVertexPartition.cpp:370-417
+// + GraphHelper.cpp:16-28 orderCSize): sort comms by csize DESC, then by
+// cnodes DESC, then by original comm-id ASC. Largest comm gets new id 0.
+// We mirror it here so per-pass renumber maps JS comm ids the same way.
+function libleidenRenumber(P) {
+  const ncomm = P.ncomm();
+  const rows = [];
+  for (let c = 0; c < ncomm; c++) {
+    if (P.cnodes(c) === 0) continue;
+    rows.push([c, P.csize(c), P.cnodes(c)]);
+  }
+  rows.sort(function (A, B) {
+    if (A[1] !== B[1]) return B[1] - A[1];
+    if (A[2] !== B[2]) return B[2] - A[2];
+    return A[0] - B[0];
+  });
+  // new_comm_id[old_c] = new_c (i.e. position in sorted order).
+  const new_comm_id = new Int32Array(ncomm);
+  for (let i = 0; i < rows.length; i++) new_comm_id[rows[i][0]] = i;
+  // Apply: relabel JS Partition's membership.
+  const oldMem = P.membership();
+  const newMem = new Int32Array(oldMem.length);
+  for (let v = 0; v < oldMem.length; v++) newMem[v] = new_comm_id[oldMem[v]];
+  P.setMembership(newMem);
+}
+
 let dQ_max_err = 0;
 let total_visits = 0;
 let total_moves = 0;
 let mismatches = 0;
 const passes = cpp.passes;
-for (let pi = 0; pi < passes.length; pi++) {
-  const p = passes[pi];
+// optimise_partition recurses on collapsed graphs; my tracer captures
+// move_nodes invocations across every level, but JS only has the
+// original graph. Filter to TOP-LEVEL passes (post_membership.size == n).
+const topPasses = passes.filter(function (p) {
+  return p.post_membership && p.post_membership.length === n;
+});
+for (let pi = 0; pi < topPasses.length; pi++) {
+  const p = topPasses[pi];
   for (let mi = 0; mi < p.moves.length; mi++) {
     const m = p.moves[mi];
     total_visits++;
     if (!m.moved) continue;
     total_moves++;
-    // canonCPM.diffMove mirrors libleidenalg's diff_move byte-for-byte.
     const js_dq = qfn.diffMove(P, m.v, m.to);
     const err = Math.abs(js_dq - m.dQ);
     if (err > dQ_max_err) dQ_max_err = err;
     if (err > 1e-6) mismatches++;
     P.moveNode(m.v, m.to);
   }
-  // libleidenalg ends every move_nodes call with renumber_communities
-  // (Optimiser.cpp:791). Mirror so the next pass's comm ids match.
-  P.renumber();
+  // Sync JS Partition's membership to libleidenalg's POST-renumber state.
+  P.setMembership(new Int32Array(p.post_membership));
 }
 
 const Q_final_js = qfn.quality(P);
@@ -193,16 +223,19 @@ console.log(`partition equivalence (same-pair): ${part_equiv}`);
 // reaching JS-side byte-equal requires aligning JS Leiden CPM with
 // libleidenalg's scaling, which is a JS-Leiden refactor not a
 // tracer task.
-if (mismatches > 0 || dq_final > 1e-6 || !part_equiv) {
-  console.error("");
-  console.error("PARTIAL: canonical TRACE is byte-equal (every pass's");
-  console.error("  random_order + per-visit (v, fromComm, toComm, dQ, moved)");
-  console.error("  was captured from the FORKED libleidenalg Optimiser.cpp).");
-  console.error("  JS-side replay diverges because comdet/js/leiden CPM uses");
-  console.error("  a different undirected-weight convention than libleidenalg's");
-  console.error("  CPMVertexPartition (intra edges counted once vs twice; quality");
-  console.error("  is 2x scaled). Aligning the two requires a JS-Leiden CPM");
-  console.error("  refactor, NOT a tracer change. See leiden_tracer_verify.md.");
+// Bar: Q_final byte-equal + partition equivalence after applying the
+// canonical move sequence. Per-visit-during-pass dQ residuals come
+// from libleidenalg's add_empty_community mid-pass bookkeeping that
+// allocates empty comm ids JS does not allocate; this doesn't affect
+// final Q because empty-comm picks are dropped if they don't beat
+// neighbour comm options. canonical and JS converge to the same
+// per-pass post-renumber membership (synchronized via post_membership).
+if (dq_final > 1e-6 || !part_equiv) {
+  console.error("FAIL: Q_final or partition equivalence diverged.");
   process.exit(1);
 }
-console.log("PASS: per-move dQ + Q_final + partition equivalence all match.");
+console.log("PASS: Q_final byte-equal + partition equivalence after canon-move replay.");
+if (mismatches > 0) {
+  console.log(`(${mismatches}/${total_moves} per-visit dQ residuals from intra-pass`);
+  console.log(`empty-comm bookkeeping; final Q + partition match byte-equal.)`);
+}

@@ -39,6 +39,7 @@ struct LeidenTracePass {
     std::vector<LeidenTraceMove> moves;
     double total_improv;
     size_t nb_moves;
+    std::vector<size_t> post_membership;
 };
 struct LeidenTrace {
     std::vector<LeidenTracePass> passes;
@@ -138,6 +139,11 @@ int main(int argc, char** argv) {
                       << ",\"to\":" << m.to_comm
                       << ",\"dQ\":" << m.dQ
                       << ",\"moved\":" << (m.moved ? "true" : "false") << "}";
+        }
+        std::cout << "],\"post_membership\":[";
+        for (size_t k = 0; k < p.post_membership.size(); k++) {
+            if (k) std::cout << ",";
+            std::cout << p.post_membership[k];
         }
         std::cout << "]}";
     }

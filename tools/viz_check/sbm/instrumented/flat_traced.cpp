@@ -404,7 +404,10 @@ struct BlockState {
         return S;
     }
 
-    // subset entropy: sum of vterm/eterm entries that involve r or s.
+    // Subset entropy: sum of vterm/eterm entries that involve r or s.
+    // Iterates neList[0..Bne-1] for the cross-block eterms - on dnc
+    // B=N=906 but Bne stays ~30, so virtualMove drops from ~2B to
+    // ~2*Bne lgamma calls.
     double subsetEntropy(int r, int s) const {
         double S = 0.0;
         if (nr[r] > 0) S += (mode == Mode::DC) ? std::lgamma(er[r] + 1.0) : er[r] * safelog((double)nr[r]);
@@ -418,9 +421,9 @@ struct BlockState {
             S -= e_ss_half * LOG2 + std::lgamma(e_ss_half + 1.0);
         }
         if (r != s) S -= std::lgamma(ers[(size_t)r * B + s] + 1.0);
-        for (int t = 0; t < B; ++t) {
+        for (int i = 0; i < Bne; ++i) {
+            int t = neList[i];
             if (t == r || t == s) continue;
-            if (nr[t] == 0) continue;
             S -= std::lgamma(ers[(size_t)r * B + t] + 1.0);
             S -= std::lgamma(ers[(size_t)s * B + t] + 1.0);
         }
@@ -549,10 +552,10 @@ LevelGraph buildLevelGraph(const Graph& parentGraph, const BlockState& parent,
     }
     out.init.assign(Bne, 0);
     for (int i = 0; i < Bne; ++i) {
-        // Hierarchy entries are sized to the parent block count at
-        // construction. New blocks opened mid-mcmc fall outside that
-        // range; default them to 0 to mirror the JS port's
-        // (undefined | 0) coercion in nested_state.js:relabelInit.
+        // Hierarchy is sized to the parent block count at construction;
+        // mid-mcmc "open new block" candidates fall outside. Default to
+        // 0 to mirror the JS port's (b_next[idx] | 0) coercion in
+        // nested_state.js:buildLevelGraph.
         int parentId = nonEmpty[i];
         out.init[i] = (parentId < (int)b_next.size()) ? b_next[parentId] : 0;
     }
@@ -732,7 +735,6 @@ int runNested(const Args& args, Mode mode, Graph& g0,
                 o << "{\"v\":" << v
                   << ",\"fromR\":" << fromR
                   << ",\"toS\":" << toS
-                  << ",\"pickIdx\":" << pickIdx
                   << ",\"cands\":[";
                 for (size_t j = 0; j < cands.size(); ++j) { if (j) o << ","; o << cands[j]; }
                 o << "],\"dS\":";
@@ -749,9 +751,11 @@ int runNested(const Args& args, Mode mode, Graph& g0,
             o << ",\"accepted\":" << sweepAccepted
               << ",\"Bne_post\":" << st.Bne
               << "}";
-            // Propagate: rebuild level-(l+1)..L graphs from updated e_rs at this level.
-            // The hierarchy entries for those upper levels are reused;
-            // remap per the new compaction.
+            // Propagate updated e_rs to upper levels. virtualMove's
+            // apply-eval-revert can mutate neList ordering even when no
+            // move is committed, which percolates into the cand pools
+            // via candidatePool's nonEmptyBlocks slice; rebuild
+            // unconditionally to keep cpp + JS replay byte-equal.
             for (int up = l + 1; up < L; ++up) {
                 LevelGraph rebuilt = buildLevelGraph(*graphs[up - 1], *states[up - 1],
                                                     hierarchy[up]);
@@ -846,7 +850,6 @@ int main(int argc, char** argv) try {
             o << "{\"v\":" << v
               << ",\"fromR\":" << fromR
               << ",\"toS\":" << toS
-              << ",\"pickIdx\":" << pickIdx
               << ",\"cands\":[";
             for (size_t j = 0; j < cands.size(); ++j) { if (j) o << ","; o << cands[j]; }
             o << "],\"dS\":";

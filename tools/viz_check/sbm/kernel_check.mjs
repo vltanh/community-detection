@@ -80,6 +80,18 @@ function loadEdges(edgePath, renum) {
   return edges;
 }
 
+// Relative tolerance: drift / max(1, |S|) < 1e-12.
+// JS uses a 7-coefficient Lanczos lgamma; cpp uses glibc's lgamma.
+// At fixed partition both implementations must agree to within their
+// inherent precision (~1ulp ~ 1e-15 relative on lgamma for inputs in
+// [0.5, 1e6]). PP entropy on dnc has lbinom args ~ 4e5 which pushes
+// absolute drift to ~1e-9; relative is still ~3e-14.
+const REL_S_TOL = 1e-12;
+const ABS_dS_TOL = 1e-7;  // dS = subset entropy diff, hits same scale.
+function withinRelS(drift, S) {
+  return drift <= REL_S_TOL * Math.max(1, Math.abs(S));
+}
+
 const renum = trace.renum_to_orig;
 const N = renum.length;
 const edges = loadEdges(edgePath, renum);
@@ -98,18 +110,6 @@ const state = COMDET.SBM.BlockState(G, stateOpts);
 const failures = [];
 function check(cond, msg) { if (!cond) failures.push(msg); }
 
-// Relative tolerance: drift / max(1, |S|) < 1e-12.
-// JS uses a 7-coefficient Lanczos lgamma; cpp uses glibc's lgamma.
-// At fixed partition both implementations must agree to within their
-// inherent precision (~1ulp ~ 1e-15 relative on lgamma for inputs in
-// [0.5, 1e6]). PP entropy on dnc has lbinom args ~ 4e5 which pushes
-// absolute drift to ~1e-9; relative is still ~3e-14.
-const REL_S_TOL = 1e-12;
-const ABS_dS_TOL = 1e-7;  // dS = subset entropy diff, hits same scale.
-function withinRelS(drift, S) {
-  return drift <= REL_S_TOL * Math.max(1, Math.abs(S));
-}
-
 // ── Initial entropy ─────────────────────────────────────────────────
 const S_init_js = state.entropy();
 const S_init_drift = Math.abs(S_init_js - trace.S_init);
@@ -123,7 +123,6 @@ let totalVisits = 0;
 let totalMismatchedAccept = 0;
 let totalMismatchedMoved = 0;
 let totalMismatchedToS = 0;
-let totalMismatchedPickIdx = 0;
 let totalMismatchedCands = 0;
 
 const rngStub = COMDET.LOUVAIN.MT19937(0);  // unused when oracle + visitOrder set
@@ -153,7 +152,8 @@ for (let sw = 0; sw < trace.sweeps.length; sw++) {
     if (j.v !== t.v) failures.push(`sweep ${sw} visit ${i}: v ${j.v} != ${t.v}`);
     if (j.fromR !== t.fromR) failures.push(`sweep ${sw} visit ${i}: fromR ${j.fromR} != ${t.fromR}`);
     if (j.toS !== t.toS) totalMismatchedToS++;
-    if (j.pickIdx !== t.pickIdx) totalMismatchedPickIdx++;
+    // pickIdx is derivable from cands.indexOf(toS); cands ordering
+    // is the load-bearing equality (verifies neList stays in sync).
     if (j.cands.length !== t.cands.length) totalMismatchedCands++;
     else for (let k = 0; k < j.cands.length; k++) if (j.cands[k] !== t.cands[k]) { totalMismatchedCands++; break; }
     if (j.accept !== t.accept) totalMismatchedAccept++;
@@ -176,7 +176,6 @@ for (let v = 0; v < N; v++) if (finalJs[v] !== trace.final_membership[v]) memDif
 if (memDiffs > 0) failures.push(`final_membership ${memDiffs}/${N} entries differ`);
 
 if (totalMismatchedToS) failures.push(`toS mismatches: ${totalMismatchedToS}/${totalVisits}`);
-if (totalMismatchedPickIdx) failures.push(`pickIdx mismatches: ${totalMismatchedPickIdx}/${totalVisits}`);
 if (totalMismatchedCands) failures.push(`cand-pool mismatches: ${totalMismatchedCands}/${totalVisits}`);
 if (totalMismatchedAccept) failures.push(`accept mismatches: ${totalMismatchedAccept}/${totalVisits}`);
 if (totalMismatchedMoved) failures.push(`moved mismatches: ${totalMismatchedMoved}/${totalVisits}`);
@@ -217,9 +216,6 @@ async function runNestedReplay(G0, trace) {
     for (const st of states) S += st.entropy();
     return S;
   }
-  const REL_S_TOL = 1e-12;
-  const ABS_dS_TOL = 1e-7;
-  function withinRelS(drift, S) { return drift <= REL_S_TOL * Math.max(1, Math.abs(S)); }
 
   // Anchor: total S_init.
   const S_init_js = totalS();
@@ -262,8 +258,7 @@ async function runNestedReplay(G0, trace) {
         const j = out.traces[i];
         totalVisits++;
         if (j.v !== t.v || j.fromR !== t.fromR || j.toS !== t.toS
-            || j.pickIdx !== t.pickIdx || j.accept !== t.accept
-            || j.accepted !== t.moved) mismatches++;
+            || j.accept !== t.accept || j.accepted !== t.moved) mismatches++;
         const d = Math.abs(j.dS - t.dS);
         if (d > dSMax) dSMax = d;
       }

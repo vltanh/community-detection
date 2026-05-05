@@ -12,38 +12,9 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { loadVIECUT } from "./_loader.mjs";
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-let JS_DIR = resolve(HERE, "../../../../",
-                     "vltanh.github.io/comdet/js/viecut");
-if (!existsSync(JS_DIR)) {
-  const home = process.env.HOME || "";
-  JS_DIR = resolve(home, "Documents/web/vltanh.github.io/comdet/js/viecut");
-}
-if (!existsSync(JS_DIR)) {
-  console.error(`viecut JS dir not found; tried both repo-relative and ${JS_DIR}`);
-  process.exit(2);
-}
-
-globalThis.window = globalThis;
-globalThis.COMDET = globalThis.COMDET || {};
-
-const order = [
-  "random.js", "union_find.js", "node_bucket_pq.js",
-  "mutable_graph.js", "cactus_graph.js",
-  "balanced_cut_dfs.js", "most_balanced.js",
-  "minimum_cut_helpers.js", "contract_graph.js", "contraction_tests.js",
-  "scc.js", "noi_minimum_cut.js", "viecut_heuristic.js",
-  "push_relabel.js", "heavy_edges.js", "graph_modification.js",
-  "recursive_cactus.js", "cactus_mincut.js", "index.js",
-];
-for (const f of order) {
-  const code = readFileSync(resolve(JS_DIR, f), "utf-8");
-  // eslint-disable-next-line no-new-func
-  new Function(code).call(globalThis);
-}
-const VIECUT = globalThis.COMDET.VIECUT;
+const VIECUT = loadVIECUT();
 
 function loadMetis(path) {
   const txt = readFileSync(path, "utf-8");
@@ -64,16 +35,15 @@ function loadMetis(path) {
 function buildG(n, edges) {
   const G = new VIECUT.MutableGraph();
   G.start_construction(n);
-  G.last_node = n;
   for (const [u, v] of edges) G.new_edge(u, v, 1);
   G.finish_construction();
   return G;
 }
 
-function bipartitionMatches(target, predicate) {
+function bipartitionMatches(target, inSet) {
   let exact = true, flip = true;
   for (let i = 0; i < target.length; i++) {
-    const v = predicate(i);
+    const v = inSet.has(i) ? 1 : 0;
     if (v !== target[i]) exact = false;
     if (v !== 1 - target[i]) flip = false;
     if (!exact && !flip) return false;
@@ -112,7 +82,7 @@ function main() {
     }
     const target = cl.bipartition;
     const inSet = new Set(result.inPartition);
-    if (bipartitionMatches(target, (i) => inSet.has(i) ? 1 : 0)) {
+    if (bipartitionMatches(target, inSet)) {
       pass++;
       continue;
     }

@@ -34,9 +34,8 @@ BIN = REPO / "VieCut" / "build" / "mincut"
 JS_REPLAY = HERE / "kernel_check.mjs"
 
 
-def read_edges(edge_csv: Path) -> tuple[list[tuple[int, int]], int]:
+def read_edges(edge_csv: Path) -> list[tuple[int, int]]:
     edges: list[tuple[int, int]] = []
-    max_id = -1
     with edge_csv.open() as f:
         header = next(f).strip().lower()
         if not (header.startswith("node_id1") or header.startswith("source")):
@@ -49,8 +48,7 @@ def read_edges(edge_csv: Path) -> tuple[list[tuple[int, int]], int]:
             if u == v:
                 continue
             edges.append((u, v))
-            max_id = max(max_id, u, v)
-    return edges, max_id + 1
+    return edges
 
 
 def read_clusters(com_csv: Path) -> dict[int, list[int]]:
@@ -69,35 +67,26 @@ def read_clusters(com_csv: Path) -> dict[int, list[int]]:
     return clusters
 
 
-def cluster_to_metis(global_edges, cluster_nodes, metis_path: Path
-                     ) -> tuple[list[int], int, int]:
-    """Induce subgraph on cluster_nodes; renumber 1..k for METIS.
-
-    Returns (cluster_nodes, n, m). cluster_nodes is the canonical
-    ordering of original ids = subgraph 0-indexed positions.
-    """
-    cluster_set = set(cluster_nodes)
+def cluster_to_metis(global_edges, cluster_nodes, metis_path: Path) -> None:
+    """Induce subgraph on cluster_nodes; emit METIS file (1-indexed)."""
     pos = {nid: i for i, nid in enumerate(cluster_nodes)}
     seen: set[tuple[int, int]] = set()
-    edges_local: list[tuple[int, int]] = []
-    for u, v in global_edges:
-        if u in cluster_set and v in cluster_set:
-            a, b = (pos[u], pos[v]) if pos[u] < pos[v] else (pos[v], pos[u])
-            if (a, b) in seen:
-                continue
-            seen.add((a, b))
-            edges_local.append((a, b))
     n = len(cluster_nodes)
     adj: list[list[int]] = [[] for _ in range(n)]
-    for u, v in edges_local:
-        adj[u].append(v + 1)
-        adj[v].append(u + 1)
+    for u, v in global_edges:
+        if u not in pos or v not in pos:
+            continue
+        a, b = (pos[u], pos[v]) if pos[u] < pos[v] else (pos[v], pos[u])
+        if (a, b) in seen:
+            continue
+        seen.add((a, b))
+        adj[a].append(b + 1)
+        adj[b].append(a + 1)
     m = sum(len(a) for a in adj) // 2
     with metis_path.open("w") as f:
         f.write(f"{n} {m}\n")
         for i in range(n):
             f.write(" ".join(str(x) for x in sorted(adj[i])) + "\n")
-    return cluster_nodes, n, m
 
 
 def parse_cactus_graphml(text: str) -> dict:
@@ -179,7 +168,7 @@ def run_mincut(metis: Path, cut_file: Path, cactus_file: Path,
 def per_cluster_3leg(name: str, edge: Path, com: Path, work: Path,
                      verbose: bool) -> tuple[int, int, int]:
     """Run all clusters of one fixture; return (clusters_run, fails, skipped)."""
-    global_edges, n_global = read_edges(edge)
+    global_edges = read_edges(edge)
     clusters = read_clusters(com)
     fails = 0
     skipped = 0

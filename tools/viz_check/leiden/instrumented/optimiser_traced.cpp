@@ -21,6 +21,7 @@ struct LeidenTracePass {
     int phase;                                 // 0 = move_nodes, 1 = merge_nodes_constrained
     size_t level;                              // collapse depth (vcount of operating graph)
     std::vector<size_t> shuffled_nodes;        // post-shuffle order
+    std::vector<size_t> pre_membership;        // membership at pass start (before any move)
     std::vector<LeidenTraceMove> moves;
     double total_improv;
     size_t nb_moves;
@@ -574,7 +575,7 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
       nodes.push_back(v);
   }
   shuffle(nodes, &rng);
-  // [TRACE-LD] Capture per-pass init: phase, level, queue.
+  // [TRACE-LD] Capture per-pass init: phase, level, queue, pre_membership.
   gTrace.passes.push_back({});
   size_t pass_idx = gTrace.passes.size() - 1;
   gTrace.passes[pass_idx].pass = pass_idx;
@@ -582,6 +583,10 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
   gTrace.passes[pass_idx].level = n;       // current graph vcount = "level" proxy
   gTrace.passes[pass_idx].n_nodes_in_queue = nodes.size();
   gTrace.passes[pass_idx].shuffled_nodes = nodes;
+  {
+    auto const& mem = partitions[0]->membership();
+    gTrace.passes[pass_idx].pre_membership.assign(mem.begin(), mem.end());
+  }
   fprintf(stderr, "[TRACE-LD] PASS_BEGIN pass=%zu phase=move level=%zu queue=%zu\n",
           pass_idx, n, nodes.size());
   deque<size_t> vertex_order(nodes.begin(), nodes.end());
@@ -1333,7 +1338,7 @@ double Optimiser::merge_nodes_constrained(vector<MutableVertexPartition*> partit
   // But if we use a random order, we shuffle this order.
   shuffle(vertex_order, &rng);
 
-  // [TRACE-LD] Capture refine pass init: phase=1, level (graph vcount), shuffled queue.
+  // [TRACE-LD] Capture refine pass init: phase=1, level, queue, pre_membership.
   gTrace.passes.push_back({});
   size_t pass_idx_refine = gTrace.passes.size() - 1;
   gTrace.passes[pass_idx_refine].pass = pass_idx_refine;
@@ -1341,6 +1346,10 @@ double Optimiser::merge_nodes_constrained(vector<MutableVertexPartition*> partit
   gTrace.passes[pass_idx_refine].level = n;     // current graph vcount
   gTrace.passes[pass_idx_refine].n_nodes_in_queue = vertex_order.size();
   gTrace.passes[pass_idx_refine].shuffled_nodes = vertex_order;
+  {
+    auto const& mem = partitions[0]->membership();
+    gTrace.passes[pass_idx_refine].pre_membership.assign(mem.begin(), mem.end());
+  }
   fprintf(stderr, "[TRACE-LD] PASS_BEGIN pass=%zu phase=refine level=%zu queue=%zu\n",
           pass_idx_refine, n, vertex_order.size());
 

@@ -38,6 +38,7 @@ struct LeidenTracePass {
     int phase;                                 // 0 = move_nodes, 1 = merge_nodes_constrained
     size_t level;                              // graph vcount at this pass
     std::vector<size_t> shuffled_nodes;
+    std::vector<size_t> pre_membership;
     std::vector<LeidenTraceMove> moves;
     double total_improv;
     size_t nb_moves;
@@ -133,6 +134,11 @@ int main(int argc, char** argv) {
         for (size_t k = 0; k < p.shuffled_nodes.size(); k++) {
             if (k) std::cout << ",";
             std::cout << p.shuffled_nodes[k];
+        }
+        std::cout << "],\"pre_membership\":[";
+        for (size_t k = 0; k < p.pre_membership.size(); k++) {
+            if (k) std::cout << ",";
+            std::cout << p.pre_membership[k];
         }
         std::cout << "],\"moves\":[";
         for (size_t k = 0; k < p.moves.size(); k++) {

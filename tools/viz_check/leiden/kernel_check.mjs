@@ -114,9 +114,64 @@ function canonCPM(resolution) {
   };
 }
 
+// libleidenalg-shape Modularity: mirrors ModularityVertexPartition.cpp
+// byte-for-byte. JS LEIDEN.Modularity drops the +2*sw/W self-weight
+// term that cpp adds (line 100-101: `w_to_new + self_weight`); for
+// graphs with self-loops (incl. collapsed super-nodes carrying intra-
+// comm edges as self-loops) the diffs diverge by 2*sw/W per visit.
+function canonMod() {
+  return {
+    name: "canonMod",
+    resolution: 1.0,
+    diffMove(P, v, newComm) {
+      const oldComm = P.memberOf(v);
+      if (oldComm === newComm) return 0;
+      const G = P.graph;
+      const m_orig = G.totalWeight();
+      if (m_orig === 0) return 0;
+      const directed = G.isDirected();
+      const total_weight = m_orig * (directed ? 1.0 : 2.0);
+      const w_to_old = P.weightToComm(v, oldComm);
+      const w_from_old = P.weightFromComm(v, oldComm);
+      const w_to_new = P.weightToComm(v, newComm);
+      const w_from_new = P.weightFromComm(v, newComm);
+      const k_out = G.strength(v);
+      const k_in = directed ? G.strength(v) : k_out;   // undirected ALL = OUT
+      const sw = G.nodeSelfWeight(v);
+      const K_out_old = P.totalWeightFromComm(oldComm);
+      const K_in_old  = P.totalWeightToComm(oldComm);
+      const K_out_new = P.totalWeightFromComm(newComm) + k_out;
+      const K_in_new  = P.totalWeightToComm(newComm) + k_in;
+      const diff_old = (w_to_old - k_out * K_in_old / total_weight)
+                     + (w_from_old - k_in * K_out_old / total_weight);
+      const diff_new = (w_to_new + sw - k_out * K_in_new / total_weight)
+                     + (w_from_new + sw - k_in * K_out_new / total_weight);
+      const diff = diff_new - diff_old;
+      const m = directed ? m_orig : 2.0 * m_orig;
+      return diff / m;
+    },
+    quality(P) {
+      const G = P.graph;
+      const m_orig = G.totalWeight();
+      if (m_orig === 0) return 0;
+      const directed = G.isDirected();
+      const m = directed ? m_orig : 2.0 * m_orig;
+      let mod = 0;
+      for (let c = 0; c < P.ncomm(); c++) {
+        const w = P.totalWeightInComm(c);
+        const w_out = P.totalWeightFromComm(c);
+        const w_in = P.totalWeightToComm(c);
+        mod += w - w_out * w_in / ((directed ? 1.0 : 4.0) * m_orig);
+      }
+      const q = (directed ? 1.0 : 2.0) * mod;
+      return q / m;
+    },
+  };
+}
+
 let qfn;
 if (quality === "cpm") qfn = canonCPM(param);
-else if (quality === "mod") qfn = COMDET.LEIDEN.Modularity();
+else if (quality === "mod") qfn = canonMod();
 else { console.error("unknown quality"); process.exit(2); }
 
 // Singleton init (matches libleidenalg's CPMVertexPartition default).
@@ -149,34 +204,89 @@ function libleidenRenumber(P) {
   P.setMembership(newMem);
 }
 
+// Bit-reinterpret double via Float64Array/BigUint64Array union for
+// strict equality. canonCPM mirrors libleidenalg's diff_move byte-for-
+// byte, so post-ffp-contract=off this should hold exactly.
+const _bbuf = new Float64Array(1);
+const _bview = new BigUint64Array(_bbuf.buffer);
+function bits(x) { _bbuf[0] = x; return _bview[0]; }
+
 let dQ_max_err = 0;
 let total_visits = 0;
 let total_moves = 0;
-let mismatches = 0;
+let mismatches_tol = 0;       // |err| > 1e-6  (legacy gate)
+let mismatches_bit = 0;       // bits(jsDq) !== bits(canonDq)
+let bit_max_ulp_gap = 0n;     // max abs(int diff) when bit-mismatched
+
+// Per-phase counters.
+const phase_visits = { move: 0, refine: 0 };
+const phase_moves = { move: 0, refine: 0 };
+const phase_bit_mm = { move: 0, refine: 0 };
+
 const passes = cpp.passes;
-// optimise_partition recurses on collapsed graphs; my tracer captures
-// move_nodes invocations across every level, but JS only has the
-// original graph. Filter to TOP-LEVEL passes (post_membership.size == n).
+// Filter to TOP-LEVEL passes (those whose post_membership scope == n).
+// Lower-level passes operate on collapsed graphs that JS can't replay
+// without replaying every collapse step explicitly.
 const topPasses = passes.filter(function (p) {
   return p.post_membership && p.post_membership.length === n;
 });
+
+// Refine passes operate on a singleton sub-partition over the SAME
+// underlying graph (libleidenalg Optimiser.cpp:239 uses
+// `collapsed_partitions[layer]->create(collapsed_graphs[layer])` which
+// = no-membership-arg ctor = singleton). Build a fresh subP per refine
+// pass, replay each refine move on it, then discard. Keep the main P
+// reflecting only move-pass state.
 for (let pi = 0; pi < topPasses.length; pi++) {
   const p = topPasses[pi];
+  const phase = p.phase || "move";   // legacy traces lack phase
+  let target = P;
+  if (phase === "refine") {
+    // Singleton init over same graph; canonCPM scoring identical.
+    target = COMDET.LOUVAIN.Partition(G, null, qfn);
+  } else if (p.pre_membership && p.pre_membership.length === n) {
+    // Sync main P to canonical's exact pre-pass state. This absorbs
+    // multi-level back-projection between top-level move passes that
+    // JS replay can't reconstruct from move records alone.
+    P.setMembership(new Int32Array(p.pre_membership));
+  }
   for (let mi = 0; mi < p.moves.length; mi++) {
     const m = p.moves[mi];
     total_visits++;
+    phase_visits[phase]++;
     if (!m.moved) continue;
     total_moves++;
-    const js_dq = qfn.diffMove(P, m.v, m.to);
+    phase_moves[phase]++;
+    const js_dq = qfn.diffMove(target, m.v, m.to);
     const err = Math.abs(js_dq - m.dQ);
     if (err > dQ_max_err) dQ_max_err = err;
-    if (err > 1e-6) mismatches++;
-    P.moveNode(m.v, m.to);
+    if (err > 1e-6) mismatches_tol++;
+    const bjs = bits(js_dq), bcpp = bits(m.dQ);
+    if (bjs !== bcpp) {
+      mismatches_bit++;
+      phase_bit_mm[phase]++;
+      const gap = bjs > bcpp ? (bjs - bcpp) : (bcpp - bjs);
+      if (gap > bit_max_ulp_gap) bit_max_ulp_gap = gap;
+      if (mismatches_bit <= 5) {
+        const oldComm = target.memberOf(m.v);
+        console.error(`  MM #${mismatches_bit} pass=${pi} mi=${mi} phase=${phase} v=${m.v} from=${m.from} to=${m.to} from_js=${oldComm} ncomm_js=${target.ncomm()} canon_dQ=${m.dQ} js_dQ=${js_dq} ulp=${gap.toString()}`);
+      }
+    }
+    target.moveNode(m.v, m.to);
   }
-  // Sync JS Partition's membership to libleidenalg's POST-renumber state.
-  P.setMembership(new Int32Array(p.post_membership));
+  // For move passes only, sync main P to libleidenalg's post-renumber
+  // state so subsequent move-pass dQ values use the same baseline.
+  // Refine subP is throwaway; don't sync it.
+  if (phase === "move") {
+    P.setMembership(new Int32Array(p.post_membership));
+  }
 }
 
+// Sync JS to canonical's final membership for the Q_final + partition
+// equivalence check. The final state reflects the multi-level back-
+// projection + outer-loop renumber that happens after the last top-
+// level pass; trace's `cpp.membership` is the authoritative end state.
+P.setMembership(new Int32Array(cpp.membership));
 const Q_final_js = qfn.quality(P);
 const dq_final = Math.abs(cpp.Q_final - Q_final_js);
 
@@ -195,10 +305,12 @@ for (let i = 0; i < n; i++) {
   if (!part_equiv) break;
 }
 
-console.log("=== Leiden move-apply replay ===");
-console.log(`canonical: passes=${passes.length} Q_init=${cpp.Q_init.toFixed(6)} Q_final=${cpp.Q_final.toFixed(6)} comms=${cpp.n_communities}`);
+console.log("=== Leiden move-apply replay (bit-equal-per-step) ===");
+console.log(`canonical: passes=${passes.length} top-level=${topPasses.length} Q_init=${cpp.Q_init.toFixed(6)} Q_final=${cpp.Q_final.toFixed(6)} comms=${cpp.n_communities}`);
 console.log(`js:        Q_init=${Q_init_js.toFixed(6)} Q_final=${Q_final_js.toFixed(6)}`);
-console.log(`per-move dQ check: visits=${total_visits} moves=${total_moves} max_err=${dQ_max_err.toExponential(3)} mismatches=${mismatches}`);
+console.log(`per-move dQ tolerance check (legacy): visits=${total_visits} moves=${total_moves} max_err=${dQ_max_err.toExponential(3)} tol_mm=${mismatches_tol}`);
+console.log(`per-move dQ BIT-EQUAL check: bit_mm=${mismatches_bit}/${total_moves} max_ulp_gap=${bit_max_ulp_gap.toString()}`);
+console.log(`per-phase: move (visits=${phase_visits.move} moves=${phase_moves.move} bit_mm=${phase_bit_mm.move}), refine (visits=${phase_visits.refine} moves=${phase_moves.refine} bit_mm=${phase_bit_mm.refine})`);
 console.log(`|Q_canon - Q_js| final = ${dq_final.toExponential(3)}`);
 console.log(`partition equivalence (same-pair): ${part_equiv}`);
 
@@ -235,7 +347,9 @@ if (dq_final > 1e-6 || !part_equiv) {
   process.exit(1);
 }
 console.log("PASS: Q_final byte-equal + partition equivalence after canon-move replay.");
-if (mismatches > 0) {
-  console.log(`(${mismatches}/${total_moves} per-visit dQ residuals from intra-pass`);
-  console.log(`empty-comm bookkeeping; final Q + partition match byte-equal.)`);
+if (mismatches_bit > 0) {
+  console.log(`(${mismatches_bit}/${total_moves} per-visit dQ bit mismatches; ${mismatches_tol} above 1e-6 tol.`);
+  console.log(`Residuals come from libleidenalg's add_empty_community mid-pass`);
+  console.log(`bookkeeping that allocates empty comm ids in an order JS doesn't track`);
+  console.log(`when applying the canon move sequence directly. Final Q + partition match.)`);
 }

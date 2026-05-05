@@ -117,12 +117,14 @@ for (let L = 0; L < Lmin; L++) {
       const cv = cpLv.visits[cpIdx++];
       totalVisits++;
       const jsDeltaBits = bitsHex(jv.moved ? jv.delta : 0);
+      const jsGainBits  = bitsHex(jv.moved ? (jv.deltaGain != null ? jv.deltaGain : jv.delta * (cpp.m2 || 1)) : 0);
       const ok =
         jv.v === cv.v &&
         jv.fromComm === cv.fromComm &&
         jv.toComm === cv.toComm &&
         (!!jv.moved) === (!!cv.moved) &&
         jsDeltaBits === cv.dSbits &&
+        (cv.dGainBits == null || jsGainBits === cv.dGainBits) &&
         cv.pass === P &&
         cv.visit === V;
       if (!ok) {

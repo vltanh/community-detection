@@ -91,6 +91,7 @@ CD_PARAMS=("criterion=${CM_CRIT}"
            "mincut_type=${MINCUT_TYPE}"
            "n_threads=${N_THREADS}"
            "seed=${SEED}")
+CD_EXTRA_LOGS=("${OUTPUT_DIR}/cm.log" "${OUTPUT_DIR}/history.log")
 
 # shellcheck disable=SC1091
 source "${SHARED_DIR}/single_stage_pipeline.sh"

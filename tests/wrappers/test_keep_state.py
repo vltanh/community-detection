@@ -1,8 +1,11 @@
 """--keep-state plumbing through every wrapper + the driver.
 
-Verifies: --keep-state preserves time_and_err.log + params.txt across runs;
-absence of --keep-state cleans them up. Run as slow because it invokes the
-real algos via the wrappers.
+Verifies leaf shape after a run: the canonical four artifacts (com.csv,
+done, params.txt, run.log) are always present; per-stage shell + python
+traces live in a temp dir and are wiped on exit, so no .state/<stage>/
+subtree leaks into the leaf either with or without --keep-state. Cache
+hit / tamper invalidation cases are covered separately. Slow because it
+invokes the real algos via the wrappers.
 """
 
 import os
@@ -36,27 +39,29 @@ def _run_leiden(repo_root, output_dir, keep_state, dnc_edgelist):
     return subprocess.run(args, capture_output=True, text=True, env=_env())
 
 
-def test_keep_state_preserves_intermediates(repo_root, tmp_path, dnc_edgelist):
+def _assert_canonical_leaf(out):
+    """Leaf retains exactly com.csv + done + params.txt + run.log."""
+    assert sorted(p.name for p in out.iterdir()) == [
+        "com.csv", "done", "params.txt", "run.log",
+    ]
+
+
+def test_leaf_shape_keep_state(repo_root, tmp_path, dnc_edgelist):
     if not dnc_edgelist.exists():
         pytest.skip(f"dnc fixture not present")
     out = tmp_path / "leiden-mod"
     rc = _run_leiden(repo_root, out, keep_state=True, dnc_edgelist=dnc_edgelist)
     assert rc.returncode == 0, rc.stderr
-    assert (out / "com.csv").exists()
-    assert (out / "params.txt").exists()
-    assert (out / "time_and_err.log").exists()
-    assert (out / "pipeline.log").exists()
+    _assert_canonical_leaf(out)
 
 
-def test_no_keep_state_cleans_intermediates(repo_root, tmp_path, dnc_edgelist):
+def test_leaf_shape_no_keep_state(repo_root, tmp_path, dnc_edgelist):
     if not dnc_edgelist.exists():
         pytest.skip(f"dnc fixture not present")
     out = tmp_path / "leiden-mod"
     rc = _run_leiden(repo_root, out, keep_state=False, dnc_edgelist=dnc_edgelist)
     assert rc.returncode == 0, rc.stderr
-    assert (out / "com.csv").exists()
-    assert not (out / "params.txt").exists(), "params.txt should be removed without --keep-state"
-    assert not (out / "time_and_err.log").exists(), "time_and_err.log should be removed without --keep-state"
+    _assert_canonical_leaf(out)
 
 
 def test_keep_state_3run_roundtrip(repo_root, tmp_path, dnc_edgelist):

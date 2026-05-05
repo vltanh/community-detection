@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from pipeline_common import drop_singleton_clusters, standard_setup, timed
+from pipeline_common import drop_singleton_clusters, setup_logging, timed
 
 
 QUALITY_IDS = {
@@ -58,6 +58,7 @@ def parse_args():
     p.add_argument("--louvain-bin-dir", required=True)
     p.add_argument("--seed-preload", default=None,
                    help="Path to louvain_seed_preload.so (LD_PRELOAD shim).")
+    p.add_argument("--log-file", type=str, default=None)
     return p.parse_args()
 
 
@@ -103,7 +104,9 @@ def _read_partition(hierarchy_bin: Path, tree_path: Path, level: int) -> dict[in
 
 def main():
     args = parse_args()
-    output_dir = standard_setup(args.output_directory)
+    output_dir = Path(args.output_directory)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    setup_logging(Path(args.log_file) if args.log_file else output_dir / "run.log")
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
     bin_dir = Path(args.louvain_bin_dir).resolve()

@@ -54,7 +54,7 @@ def test_driver_runs_and_marks_done(repo_root, tmp_path):
     assert (out / "done").exists()
     assert (out / "com.csv").exists()
     assert (out / "params.txt").exists()
-    assert (out / "pipeline.log").exists()
+    assert (out / "run.log").exists()
 
 
 def test_driver_cache_hit_on_rerun(repo_root, tmp_path):

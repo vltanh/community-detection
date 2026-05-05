@@ -7,7 +7,7 @@ import graph_tool.all as gt
 import numpy as np
 import pandas as pd
 
-from pipeline_common import drop_singleton_clusters, standard_setup, timed
+from pipeline_common import drop_singleton_clusters, setup_logging, timed
 
 
 def load_network(edgelist_fn):
@@ -25,6 +25,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--edgelist", type=str, required=True)
     parser.add_argument("--output-directory", type=str, required=True)
+    parser.add_argument("--log-file", type=str, default=None)
     parser.add_argument(
         "--method",
         type=str,
@@ -37,7 +38,9 @@ def parse_args():
 
 def main():
     args = parse_args()
-    output_dir = standard_setup(args.output_directory)
+    output_dir = Path(args.output_directory)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    setup_logging(Path(args.log_file) if args.log_file else output_dir / "run.log")
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
 
     is_nested = args.method.startswith("nested")

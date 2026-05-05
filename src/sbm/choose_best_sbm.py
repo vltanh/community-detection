@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from pipeline_common import standard_setup, timed
+from pipeline_common import setup_logging, timed
 
 
 def parse_args():
@@ -14,6 +14,7 @@ def parse_args():
     parser.add_argument("--com_files", nargs="+", required=True)
     parser.add_argument("--model_names", nargs="+", required=True)
     parser.add_argument("--out_dir", default=".")
+    parser.add_argument("--log-file", type=str, default=None)
     return parser.parse_args()
 
 
@@ -54,7 +55,9 @@ def choose_best_sbm(entropy_files, com_files, model_names, out_dir):
 
 def main():
     args = parse_args()
-    standard_setup(args.out_dir)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    setup_logging(Path(args.log_file) if args.log_file else out_dir / "run.log")
     logging.getLogger().addHandler(logging.StreamHandler(sys.stdout))
     with timed("choose_best_sbm"):
         choose_best_sbm(args.entropy_files, args.com_files, args.model_names, args.out_dir)

@@ -7,14 +7,16 @@ from pathlib import Path
 import networkit as nk
 import pandas as pd
 
-from pipeline_common import standard_setup, timed
+from pipeline_common import setup_logging, timed
 
 
 def main(args):
     global quiet
 
     edgelist = args.edgelist
-    output_dir = standard_setup(args.output_directory)
+    output_dir = Path(args.output_directory)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    setup_logging(Path(args.log_file) if args.log_file else output_dir / "run.log")
     k = args.kvalue
     quiet = args.quiet
 
@@ -361,6 +363,8 @@ def parseArgs():
     parser.add_argument(
         "-q", "--quiet", action="store_true", help="silence ikc outputs"
     )
+
+    parser.add_argument("--log-file", type=str, default=None)
 
     parser.add_argument(
         "-v",

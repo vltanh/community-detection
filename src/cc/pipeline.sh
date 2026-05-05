@@ -60,6 +60,7 @@ CD_CMD=("${BINARY}" MincutOnly
 CD_INPUTS="${INPUT_EDGELIST} ${BASE_COM}"
 CD_OUTPUTS="${OUTPUT_DIR}/com.csv"
 CD_PARAMS=("criterion=0" "n_threads=${N_THREADS}" "seed=${SEED}")
+CD_EXTRA_LOGS=("${OUTPUT_DIR}/cc.log")
 
 # shellcheck disable=SC1091
 source "${SHARED_DIR}/single_stage_pipeline.sh"

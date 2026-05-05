@@ -71,6 +71,15 @@ struct InfomapTraceVisit {
     double exit_log_exit = 0.0;
     double flow_log_flow = 0.0;
     double nodeFlow_log_nodeFlow = 0.0;
+    unsigned int oldM = 0;
+    double oldM_enter_pre = 0.0, oldM_exit_pre = 0.0, oldM_flow_pre = 0.0;
+    double newM_enter_pre = 0.0, newM_exit_pre = 0.0, newM_flow_pre = 0.0;
+    double oldM_enter_post = 0.0, oldM_exit_post = 0.0, oldM_flow_post = 0.0;
+    double newM_enter_post = 0.0, newM_exit_post = 0.0, newM_flow_post = 0.0;
+    double deltaEEOld = 0.0, deltaEENew = 0.0;
+    double deltaEnterOld = 0.0, deltaExitOld = 0.0;
+    double deltaEnterNew = 0.0, deltaExitNew = 0.0;
+    double node_enter = 0.0, node_exit = 0.0, node_flow = 0.0;
 };
 struct InfomapTraceCall {
     int level_idx = -1;
@@ -345,7 +354,29 @@ int main(int argc, char** argv) {
                       << ",\"ele\":" << v.enter_log_enter
                       << ",\"xle\":" << v.exit_log_exit
                       << ",\"fle\":" << v.flow_log_flow
-                      << ",\"nfle\":" << v.nodeFlow_log_nodeFlow << "}";
+                      << ",\"nfle\":" << v.nodeFlow_log_nodeFlow
+                      << ",\"oM\":" << v.oldM
+                      << ",\"oMe0\":" << v.oldM_enter_pre
+                      << ",\"oMx0\":" << v.oldM_exit_pre
+                      << ",\"oMf0\":" << v.oldM_flow_pre
+                      << ",\"nMe0\":" << v.newM_enter_pre
+                      << ",\"nMx0\":" << v.newM_exit_pre
+                      << ",\"nMf0\":" << v.newM_flow_pre
+                      << ",\"oMe1\":" << v.oldM_enter_post
+                      << ",\"oMx1\":" << v.oldM_exit_post
+                      << ",\"oMf1\":" << v.oldM_flow_post
+                      << ",\"nMe1\":" << v.newM_enter_post
+                      << ",\"nMx1\":" << v.newM_exit_post
+                      << ",\"nMf1\":" << v.newM_flow_post
+                      << ",\"dEEo\":" << v.deltaEEOld
+                      << ",\"dEEn\":" << v.deltaEENew
+                      << ",\"dEo\":" << v.deltaEnterOld
+                      << ",\"dXo\":" << v.deltaExitOld
+                      << ",\"dEn\":" << v.deltaEnterNew
+                      << ",\"dXn\":" << v.deltaExitNew
+                      << ",\"vne\":" << v.node_enter
+                      << ",\"vnx\":" << v.node_exit
+                      << ",\"vnf\":" << v.node_flow << "}";
         }
         std::cout << "]}";
     }

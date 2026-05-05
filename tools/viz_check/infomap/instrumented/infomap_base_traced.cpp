@@ -141,6 +141,24 @@ struct InfomapTraceVisit {
   double exit_log_exit = 0.0;
   double flow_log_flow = 0.0;
   double nodeFlow_log_nodeFlow = 0.0;
+  // [TRACE-IM] per-move probe (only valid when moved == true).
+  // Captures m_moduleFlowData[oldM/newM].enterFlow + .exitFlow + .flow
+  // at TWO timestamps:
+  //   pre  = before m_objective.updateCodelengthOnMovingNode
+  //   post = after  m_objective.updateCodelengthOnMovingNode
+  // Plus the deltaEEOld/EENew sums that go into the update + the
+  // node's own data.enterFlow/exitFlow/flow.
+  // JS replay captures the same 6 doubles per visit; first per-move
+  // divergence localises which arithmetic op produces the 1-ulp drift.
+  unsigned int oldM = 0;
+  double oldM_enter_pre = 0.0, oldM_exit_pre = 0.0, oldM_flow_pre = 0.0;
+  double newM_enter_pre = 0.0, newM_exit_pre = 0.0, newM_flow_pre = 0.0;
+  double oldM_enter_post = 0.0, oldM_exit_post = 0.0, oldM_flow_post = 0.0;
+  double newM_enter_post = 0.0, newM_exit_post = 0.0, newM_flow_post = 0.0;
+  double deltaEEOld = 0.0, deltaEENew = 0.0;
+  double deltaEnterOld = 0.0, deltaExitOld = 0.0;
+  double deltaEnterNew = 0.0, deltaExitNew = 0.0;
+  double node_enter = 0.0, node_exit = 0.0, node_flow = 0.0;
 };
 
 struct InfomapTraceCall {
@@ -291,6 +309,46 @@ void tracePredefinedModules(InfomapBase& /*base*/,
 {
   if (g_infomap_trace.levels.empty()) return;
   g_infomap_trace.levels.back().predefined_modules = modules;
+}
+
+// [TRACE-IM] per-move probe — call AFTER traceVisitAfter on moves.
+// Writes per-move probe fields into the last visit of the last call.
+void traceMoveProbe(unsigned int oldM,
+                    double oldM_enter_pre, double oldM_exit_pre, double oldM_flow_pre,
+                    double newM_enter_pre, double newM_exit_pre, double newM_flow_pre,
+                    double oldM_enter_post, double oldM_exit_post, double oldM_flow_post,
+                    double newM_enter_post, double newM_exit_post, double newM_flow_post,
+                    double deltaEEOld, double deltaEENew,
+                    double deltaEnterOld, double deltaExitOld,
+                    double deltaEnterNew, double deltaExitNew,
+                    double node_enter, double node_exit, double node_flow)
+{
+  if (g_infomap_trace.calls.empty()) return;
+  auto& call = g_infomap_trace.calls.back();
+  if (call.visits.empty()) return;
+  auto& vt = call.visits.back();
+  vt.deltaEnterOld = deltaEnterOld;
+  vt.deltaExitOld  = deltaExitOld;
+  vt.deltaEnterNew = deltaEnterNew;
+  vt.deltaExitNew  = deltaExitNew;
+  vt.oldM = oldM;
+  vt.oldM_enter_pre = oldM_enter_pre;
+  vt.oldM_exit_pre = oldM_exit_pre;
+  vt.oldM_flow_pre = oldM_flow_pre;
+  vt.newM_enter_pre = newM_enter_pre;
+  vt.newM_exit_pre = newM_exit_pre;
+  vt.newM_flow_pre = newM_flow_pre;
+  vt.oldM_enter_post = oldM_enter_post;
+  vt.oldM_exit_post = oldM_exit_post;
+  vt.oldM_flow_post = oldM_flow_post;
+  vt.newM_enter_post = newM_enter_post;
+  vt.newM_exit_post = newM_exit_post;
+  vt.newM_flow_post = newM_flow_post;
+  vt.deltaEEOld = deltaEEOld;
+  vt.deltaEENew = deltaEENew;
+  vt.node_enter = node_enter;
+  vt.node_exit = node_exit;
+  vt.node_flow = node_flow;
 }
 
 static void traceCaptureStage(InfomapBase& self, const std::string& label)

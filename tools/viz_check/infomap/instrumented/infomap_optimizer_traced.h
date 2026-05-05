@@ -19,6 +19,8 @@
 
 #include <set>
 #include <utility>
+#include <cstring>
+#include <cstdio>
 
 namespace infomap {
 
@@ -63,6 +65,15 @@ extern void traceVisitAfter(InfomapBase& base,
                              double nodeFlow_log_nodeFlow);
 extern void tracePredefinedModules(
     InfomapBase& base, const std::vector<unsigned int>& modules);
+extern void traceMoveProbe(unsigned int oldM,
+                            double oldM_enter_pre, double oldM_exit_pre, double oldM_flow_pre,
+                            double newM_enter_pre, double newM_exit_pre, double newM_flow_pre,
+                            double oldM_enter_post, double oldM_exit_post, double oldM_flow_post,
+                            double newM_enter_post, double newM_exit_post, double newM_flow_post,
+                            double deltaEEOld, double deltaEENew,
+                            double deltaEnterOld, double deltaExitOld,
+                            double deltaEnterNew, double deltaExitNew,
+                            double node_enter, double node_exit, double node_flow);
 }
 
 namespace infomap {
@@ -377,6 +388,7 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
   for (unsigned int i = 0; i < numNodes; ++i) {
     InfoNode& current = *network[nodeEnumeration[i]];
 
+
     if (!current.dirty) {
       // [TRACE-IM] skipped pre-randomization: dirty bit unset.
       traceVisitAfter(*m_infomap, nodeEnumeration[i],
@@ -507,7 +519,33 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
         m_emptyModules.push_back(current.index);
       }
 
+      // [TRACE-IM] capture per-module values BEFORE update.
+      double _probe_oldM_enter_pre = m_moduleFlowData[current.index].enterFlow;
+      double _probe_oldM_exit_pre  = m_moduleFlowData[current.index].exitFlow;
+      double _probe_oldM_flow_pre  = m_moduleFlowData[current.index].flow;
+      double _probe_newM_enter_pre = m_moduleFlowData[bestModuleIndex].enterFlow;
+      double _probe_newM_exit_pre  = m_moduleFlowData[bestModuleIndex].exitFlow;
+      double _probe_newM_flow_pre  = m_moduleFlowData[bestModuleIndex].flow;
+      double _probe_deltaEnterOld = oldModuleDelta.deltaEnter;
+      double _probe_deltaExitOld  = oldModuleDelta.deltaExit;
+      double _probe_deltaEnterNew = bestDeltaModule.deltaEnter;
+      double _probe_deltaExitNew  = bestDeltaModule.deltaExit;
+      double _probe_deltaEEOld = oldModuleDelta.deltaEnter + oldModuleDelta.deltaExit;
+      double _probe_deltaEENew = bestDeltaModule.deltaEnter + bestDeltaModule.deltaExit;
+      double _probe_node_enter = current.data.enterFlow;
+      double _probe_node_exit  = current.data.exitFlow;
+      double _probe_node_flow  = current.data.flow;
+      unsigned int _probe_oldM = current.index;
+
       m_objective.updateCodelengthOnMovingNode(current, oldModuleDelta, bestDeltaModule, m_moduleFlowData, m_moduleMembers);
+
+      // [TRACE-IM] capture per-module values AFTER update.
+      double _probe_oldM_enter_post = m_moduleFlowData[current.index].enterFlow;
+      double _probe_oldM_exit_post  = m_moduleFlowData[current.index].exitFlow;
+      double _probe_oldM_flow_post  = m_moduleFlowData[current.index].flow;
+      double _probe_newM_enter_post = m_moduleFlowData[bestModuleIndex].enterFlow;
+      double _probe_newM_exit_post  = m_moduleFlowData[bestModuleIndex].exitFlow;
+      double _probe_newM_flow_post  = m_moduleFlowData[bestModuleIndex].flow;
 
       m_moduleMembers[current.index] -= 1;
       m_moduleMembers[bestModuleIndex] += 1;
@@ -565,6 +603,16 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
                       probeExitLogExit(m_objective),
                       probeFlowLogFlow(m_objective),
                       probeNodeFlowLogNodeFlow(m_objective));
+      // [TRACE-IM] per-move probe (pre + post m_moduleFlowData values).
+      traceMoveProbe(_probe_oldM,
+                     _probe_oldM_enter_pre, _probe_oldM_exit_pre, _probe_oldM_flow_pre,
+                     _probe_newM_enter_pre, _probe_newM_exit_pre, _probe_newM_flow_pre,
+                     _probe_oldM_enter_post, _probe_oldM_exit_post, _probe_oldM_flow_post,
+                     _probe_newM_enter_post, _probe_newM_exit_post, _probe_newM_flow_post,
+                     _probe_deltaEEOld, _probe_deltaEENew,
+                     _probe_deltaEnterOld, _probe_deltaExitOld,
+                     _probe_deltaEnterNew, _probe_deltaExitNew,
+                     _probe_node_enter, _probe_node_exit, _probe_node_flow);
     } else {
       current.dirty = false;
       // [TRACE-IM] visit evaluated all candidates + decided to stay.

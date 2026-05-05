@@ -26,6 +26,11 @@ louvain.bin
 louvain_edge.txt
 louvain_relabel.txt
 
+# Louvain L4 self-RNG bit-equal stress matrix (per-cell tracer JSON +
+# generated GNM fixtures; regenerable from kernel_check_l4.py).
+*_l4_s*.json
+gnm_*.csv
+
 # viecut tracer per-cluster artifacts
 *_viecut.metis
 *_viecut_canon_cactus.graphml

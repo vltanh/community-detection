@@ -53,9 +53,10 @@
 #                                        # /usr/bin/time -v stderr trace +
 #                                        # python stdout trace
 #
-# Per-stage shell + python logs are written to a temp dir and concatenated
-# into run.log; the temp dir is removed on exit. CD is single-stage; there
-# is no .state/<stage>/ subtree in the user-facing output.
+# Per-stage shell + python logs are written to OUTPUT_DIR/.state/ and
+# concatenated into run.log; the .state dir is removed on exit. CD is
+# single-stage, so .state holds only this stage's transient traces (no
+# nested per-stage subdirs like network-generation's simple_pipeline.sh).
 
 set -u
 
@@ -101,11 +102,18 @@ PARAMS_FILE="${OUTPUT_DIR}/params.txt"
 DONE_FILE="${OUTPUT_DIR}/done"
 LOG_FILE="${OUTPUT_DIR}/run.log"
 
-# Transient per-stage traces; folded into LOG_FILE then dropped.
-STAGE_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/cd-stage.XXXXXX")
-trap 'rm -rf "${STAGE_TMP_DIR}"' EXIT
-STAGE_TIME_LOG="${STAGE_TMP_DIR}/time_and_err.log"
-STAGE_RUN_LOG="${STAGE_TMP_DIR}/run.log"
+# Per-stage traces under OUTPUT_DIR/.state/. Mirrors network-generation's
+# simple_pipeline.sh: traces are co-located with the leaf they belong to.
+# Cleanup behavior is gated by KEEP_STATE — see the keep_or_wipe_state
+# helper below.
+STAGE_STATE_DIR="${OUTPUT_DIR}/.state"
+STAGE_TIME_LOG="${STAGE_STATE_DIR}/time_and_err.log"
+STAGE_RUN_LOG="${STAGE_STATE_DIR}/run.log"
+
+# Wipe the state dir on exit by default; success/keep-state paths re-arm
+# (clear) this trap before the final exit so .state/ persists.
+mkdir -p "${STAGE_STATE_DIR}"
+trap 'rm -rf "${STAGE_STATE_DIR}"' EXIT
 
 # Always write params.txt (participates in input hash) and log header.
 if [ "${#CD_PARAMS[@]}" -gt 0 ]; then
@@ -120,12 +128,40 @@ log_invocation_header "${LOG_FILE}" "${SEED}" "${KEEP_STATE}"
 # invalidates the cache.
 EFFECTIVE_INPUTS="${CD_INPUTS} ${PARAMS_FILE}"
 
+# Top-level cache short-circuit. Under --keep-state we additionally require
+# .state/ to exist and be consistent: every nested `done` verifies, and at
+# least one nested done exists (is_state_tree_consistent fails on an empty
+# .state/). Stale or missing .state/ invalidates the top-level done so the
+# stage regenerates everything. Mirrors network-generation/simple_pipeline.sh.
+#
+# Single-stage CD with logs-only .state/ has no nested done, so under
+# --keep-state every rerun regenerates. Multi-stage wrappers that write
+# their own per-stage done into .state/<stage>/ can short-circuit normally.
 if is_step_done "${DONE_FILE}" "${CD_OUTPUTS}"; then
-    note_stage_skipped "${STAGE_TIME_LOG}"
-    echo "Skipping ${CD_STAGE_NAME}: valid done-file found at ${DONE_FILE}."
-    append_stage_log "${LOG_FILE}" "${CD_STAGE_NAME}" "${STAGE_TIME_LOG}"
-    echo "=== ${CD_STAGE_NAME} stage completed (cache hit) ==="
-    exit 0
+    if [ "${KEEP_STATE}" = "1" ] && ! is_state_tree_consistent "${STAGE_STATE_DIR}"; then
+        echo "Top-level done valid but .state/ is missing or inconsistent; regenerating to restore cache."
+        rm -rf "${STAGE_STATE_DIR}" "${DONE_FILE}"
+        mkdir -p "${STAGE_STATE_DIR}"
+    else
+        echo "Skipping ${CD_STAGE_NAME}: valid done-file found at ${DONE_FILE}."
+        if [ "${KEEP_STATE}" = "1" ]; then
+            # Don't append SKIPPED to inner time_and_err.log — that would
+            # invalidate the inner done hash on the next rerun. Write the
+            # notice directly to top-level run.log instead.
+            {
+                echo "=== [${CD_STAGE_NAME}] SKIPPED (cache hit) ==="
+                echo "[${CD_STAGE_NAME}] $(date -u +%Y-%m-%dT%H:%M:%SZ) | pid=$$ | host=$(hostname)"
+                echo ""
+            } >> "${LOG_FILE}"
+            echo "Keeping intermediates under ${STAGE_STATE_DIR} (--keep-state)."
+            trap - EXIT
+        else
+            note_stage_skipped "${STAGE_TIME_LOG}"
+            append_stage_log "${LOG_FILE}" "${CD_STAGE_NAME}" "${STAGE_TIME_LOG}"
+        fi
+        echo "=== ${CD_STAGE_NAME} stage completed (cache hit) ==="
+        exit 0
+    fi
 fi
 
 # Inject --log-file <STAGE_RUN_LOG> into CD_CMD unless the wrapper opted out
@@ -156,9 +192,9 @@ mark_done "${DONE_FILE}" "${CD_STAGE_NAME}" "${EFFECTIVE_INPUTS}" "${CD_OUTPUTS}
 
 # Consolidate per-stage logs into the top-level run.log. Shell-wrapper trace
 # first, then python trace (when present), then any wrapper-declared extras
-# (e.g. constrained_clustering's cc.log / cm.log). Temp dir is wiped via the
-# EXIT trap; extra log files are deleted after fold-in. Leaf ends up with
-# only run.log + com.csv + done + params.txt.
+# (e.g. constrained_clustering's cc.log / cm.log). Extra log files are
+# deleted after fold-in. .state/ persists under --keep-state (gated below)
+# and is wiped via the EXIT trap otherwise.
 append_stage_log "${LOG_FILE}" "${CD_STAGE_NAME}" "${STAGE_TIME_LOG}"
 if [ -f "${STAGE_RUN_LOG}" ]; then
     append_stage_log "${LOG_FILE}" "${CD_STAGE_NAME} (python)" "${STAGE_RUN_LOG}"
@@ -169,6 +205,14 @@ for extra_log in "${CD_EXTRA_LOGS[@]}"; do
     append_stage_log "${LOG_FILE}" "${CD_STAGE_NAME} (${extra_label})" "${extra_log}"
     rm -f "${extra_log}"
 done
+
+# Under --keep-state, persist .state/ for inspection. Multi-stage wrappers
+# that need cache-hit short-circuiting under --keep-state should write their
+# own per-stage done files into .state/<stage>/ before reaching here.
+if [ "${KEEP_STATE}" = "1" ]; then
+    echo "Keeping intermediates under ${STAGE_STATE_DIR} (--keep-state)."
+    trap - EXIT
+fi
 
 echo "=== ${CD_STAGE_NAME} stage completed successfully ==="
 echo "Output: ${OUTPUT_DIR}/com.csv"

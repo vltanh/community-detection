@@ -478,6 +478,113 @@ void candidatePool(const BlockState& st, int v, std::vector<int>& cands) {
     }
 }
 
+// ── Nested helpers ──────────────────────────────────────────────────
+// Build a level-(l+1) (graph, init) pair from a level-l (graph, state).
+// Mirrors comdet/js/sbm/nested_state.js:buildLevelGraph: edges carry
+// the e_rs counts of the parent state (self-loops carry e_rr/2;
+// off-diagonals carry e_rs as-is); vertices renumbered to 0..Bne_l-1
+// via nonEmpty[i] -> i. The hierarchy entry b_{l+1} is keyed on
+// parent block ids; relabel to align with the compacted ids.
+struct LevelGraph {
+    Graph g;
+    std::vector<int> init;
+    std::vector<int> nonEmpty;  // parent block id at position i
+};
+
+LevelGraph buildLevelGraph(const Graph& parentGraph, const BlockState& parent,
+                           const std::vector<int>& b_next) {
+    int N = parentGraph.N;
+    std::map<long long, double> ers;
+    auto key = [](int r, int s) -> long long {
+        if (r > s) std::swap(r, s);
+        return (long long)r * (1LL << 30) + (long long)s;
+    };
+    for (int v = 0; v < N; ++v) {
+        int r = parent.b[v];
+        const auto& nb = parentGraph.nb[v];
+        const auto& nbW = parentGraph.nbW[v];
+        for (size_t i = 0; i < nb.size(); ++i) {
+            int u = nb[i];
+            if (u <= v) continue;
+            double w = nbW[i];
+            int s = parent.b[u];
+            ers[key(r, s)] += w;
+        }
+        if (parentGraph.selfW[v] > 0) ers[key(r, r)] += parentGraph.selfW[v];
+    }
+    std::vector<int> nonEmpty(parent.neList.begin(),
+                              parent.neList.begin() + parent.Bne);
+    std::vector<int> remap(parent.B + 1, -1);
+    for (size_t i = 0; i < nonEmpty.size(); ++i) remap[nonEmpty[i]] = (int)i;
+    LevelGraph out;
+    int Bne = (int)nonEmpty.size();
+    out.g.N = Bne;
+    out.g.nb.assign(Bne, {});
+    out.g.nbW.assign(Bne, {});
+    out.g.selfW.assign(Bne, 0.0);
+    out.g.strength.assign(Bne, 0.0);
+    out.g.E = 0.0;
+    out.g.idToOrig.resize(Bne);
+    for (int i = 0; i < Bne; ++i) out.g.idToOrig[i] = std::to_string(nonEmpty[i]);
+    for (auto& kv : ers) {
+        long long k = kv.first;
+        int r = (int)(k >> 30), s = (int)(k & ((1LL << 30) - 1));
+        int rr = remap[r], ss = remap[s];
+        if (rr < 0 || ss < 0) continue;
+        double w = kv.second;
+        if (rr == ss) {
+            out.g.nb[rr].push_back(rr);
+            out.g.nbW[rr].push_back(w);
+            out.g.selfW[rr] += w;
+            out.g.strength[rr] += 2.0 * w;
+        } else {
+            out.g.nb[rr].push_back(ss);
+            out.g.nbW[rr].push_back(w);
+            out.g.nb[ss].push_back(rr);
+            out.g.nbW[ss].push_back(w);
+            out.g.strength[rr] += w;
+            out.g.strength[ss] += w;
+        }
+        out.g.E += w;
+    }
+    out.init.assign(Bne, 0);
+    for (int i = 0; i < Bne; ++i) {
+        // Hierarchy entries are sized to the parent block count at
+        // construction. New blocks opened mid-mcmc fall outside that
+        // range; default them to 0 to mirror the JS port's
+        // (undefined | 0) coercion in nested_state.js:relabelInit.
+        int parentId = nonEmpty[i];
+        out.init[i] = (parentId < (int)b_next.size()) ? b_next[parentId] : 0;
+    }
+    out.nonEmpty = std::move(nonEmpty);
+    return out;
+}
+
+// Synthesize a deterministic hierarchy from a level-0 partition by
+// halving the block count at each level until B==1. Matches the
+// driver's auto-synthesis, used when --auto-levels is set.
+std::vector<std::vector<int>> autoHierarchy(const std::vector<int>& b0, int maxLevels) {
+    std::vector<std::vector<int>> hier{b0};
+    int K = 0;
+    for (int v : b0) K = std::max(K, v + 1);
+    while ((int)hier.size() < maxLevels && K > 1) {
+        const auto& prev = hier.back();
+        std::vector<int> b(K);
+        for (int r = 0; r < K; ++r) b[r] = r / 2;
+        // The hierarchy entry must be sized like the level-(l-1) block
+        // count; pad to prev's max block id.
+        int prevMax = 0;
+        for (int x : prev) prevMax = std::max(prevMax, x + 1);
+        if ((int)b.size() < prevMax) b.resize(prevMax, 0);
+        hier.push_back(b);
+        // Update K to next level's block count.
+        int nextK = 0;
+        for (int x : b) nextK = std::max(nextK, x + 1);
+        K = nextK;
+    }
+    return hier;
+}
+
 // ── arg parsing ─────────────────────────────────────────────────────
 struct Args {
     std::string mode;
@@ -486,6 +593,8 @@ struct Args {
     int seed = 1;
     int sweeps = 1;
     double beta = 1.0;
+    bool nested = false;
+    int autoLevels = 4;  // depth cap; nested terminates earlier when B==1
 };
 
 Args parseArgs(int argc, char** argv) {
@@ -493,12 +602,14 @@ Args parseArgs(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         std::string s = argv[i];
         auto starts = [&](const std::string& p) { return s.rfind(p, 0) == 0; };
-        if      (starts("--mode="))   a.mode   = s.substr(7);
-        else if (starts("--edge="))   a.edge   = s.substr(7);
-        else if (starts("--init="))   a.init   = s.substr(7);
-        else if (starts("--seed="))   a.seed   = std::atoi(s.c_str() + 7);
-        else if (starts("--sweeps=")) a.sweeps = std::atoi(s.c_str() + 9);
-        else if (starts("--beta="))   a.beta   = std::atof(s.c_str() + 7);
+        if      (starts("--mode="))         a.mode   = s.substr(7);
+        else if (starts("--edge="))         a.edge   = s.substr(7);
+        else if (starts("--init="))         a.init   = s.substr(7);
+        else if (starts("--seed="))         a.seed   = std::atoi(s.c_str() + 7);
+        else if (starts("--sweeps="))       a.sweeps = std::atoi(s.c_str() + 9);
+        else if (starts("--beta="))         a.beta   = std::atof(s.c_str() + 7);
+        else if (s == "--nested")           a.nested = true;
+        else if (starts("--auto-levels="))  a.autoLevels = std::atoi(s.c_str() + 14);
         else throw std::runtime_error("unknown arg: " + s);
     }
     if (a.mode.empty() || a.edge.empty() || a.init.empty())
@@ -525,12 +636,163 @@ struct JEmit {
 
 }  // namespace
 
+// ── Nested run ──────────────────────────────────────────────────────
+// Round-robin multi-level mcmc with per-sweep propagation: after the
+// level-l sweep ends, rebuild level-(l+1)..L graphs on the updated
+// e_rs. Each level's BlockState owns its own membership + e_rs;
+// inter-level coupling happens only at the rebuild boundary (matches
+// the JS NestedBlockState's coarse-grained semantics).
+int runNested(const Args& args, Mode mode, Graph& g0,
+              const std::vector<int>& init0) {
+    auto hierarchy = autoHierarchy(init0, args.autoLevels);
+    std::vector<std::unique_ptr<Graph>> graphs;
+    std::vector<std::unique_ptr<BlockState>> states;
+    graphs.emplace_back(std::make_unique<Graph>(std::move(g0)));
+    states.emplace_back(std::make_unique<BlockState>(*graphs[0], mode, hierarchy[0]));
+    for (size_t l = 1; l < hierarchy.size(); ++l) {
+        LevelGraph built = buildLevelGraph(*graphs[l - 1], *states[l - 1],
+                                           hierarchy[l]);
+        graphs.emplace_back(std::make_unique<Graph>(std::move(built.g)));
+        states.emplace_back(std::make_unique<BlockState>(*graphs[l], Mode::NDC,
+                                                        built.init));
+    }
+    int L = (int)states.size();
+
+    auto totalEntropy = [&]() {
+        double S = 0.0;
+        for (int l = 0; l < L; ++l) S += states[l]->entropy();
+        return S;
+    };
+
+    JSRng rng((uint32_t)args.seed);
+    JEmit em;
+    auto& o = em.os;
+    o << "{\"variant\":\"nested-" << args.mode
+      << "\",\"seed\":" << args.seed
+      << ",\"sweeps_planned\":" << args.sweeps
+      << ",\"beta\":";
+    em.writeDouble(args.beta);
+    o << ",\"n\":" << graphs[0]->N
+      << ",\"E\":";
+    em.writeDouble(graphs[0]->E);
+    o << ",\"renum_to_orig\":[";
+    for (int i = 0; i < graphs[0]->N; ++i) {
+        if (i) o << ",";
+        o << "\"" << graphs[0]->idToOrig[i] << "\"";
+    }
+    o << "],\"hierarchy\":[";
+    for (size_t l = 0; l < hierarchy.size(); ++l) {
+        if (l) o << ",";
+        o << "[";
+        for (size_t i = 0; i < hierarchy[l].size(); ++i) {
+            if (i) o << ",";
+            o << hierarchy[l][i];
+        }
+        o << "]";
+    }
+    o << "],\"S_init\":";
+    em.writeDouble(totalEntropy());
+    o << ",\"level_S_init\":[";
+    for (int l = 0; l < L; ++l) { if (l) o << ","; em.writeDouble(states[l]->entropy()); }
+    o << "],\"level_N\":[";
+    for (int l = 0; l < L; ++l) { if (l) o << ","; o << states[l]->N; }
+    o << "],\"level_Bne_init\":[";
+    for (int l = 0; l < L; ++l) { if (l) o << ","; o << states[l]->Bne; }
+    o << "],\"sweeps\":[";
+
+    int totalAccepted = 0;
+    std::vector<int> cands;
+    for (int sw = 0; sw < args.sweeps; ++sw) {
+        if (sw) o << ",";
+        o << "{\"sweep\":" << sw << ",\"levels\":[";
+        for (int l = 0; l < L; ++l) {
+            BlockState& st = *states[l];
+            std::vector<int> order(st.N);
+            for (int i = 0; i < st.N; ++i) order[i] = i;
+            jsShuffle(order, rng);
+            if (l) o << ",";
+            o << "{\"level\":" << l << ",\"visit_order\":[";
+            for (int i = 0; i < st.N; ++i) { if (i) o << ","; o << order[i]; }
+            o << "],\"S_pre\":";
+            em.writeDouble(st.entropy());
+            o << ",\"visits\":[";
+            int sweepAccepted = 0;
+            for (int i = 0; i < (int)order.size(); ++i) {
+                int v = order[i];
+                int fromR = st.blockOf(v);
+                candidatePool(st, v, cands);
+                int pickIdx = rng.intRange(0, (int)cands.size() - 1);
+                int toS = cands[pickIdx];
+                double dS = (toS == fromR) ? 0.0 : st.virtualMove(v, toS);
+                double acceptU = rng.acceptUniform();
+                bool accept = (dS <= 0.0) || (acceptU < std::exp(-args.beta * dS));
+                bool committed = accept && (toS != fromR);
+                if (committed) { st.moveVertex(v, toS); ++sweepAccepted; }
+                if (i) o << ",";
+                o << "{\"v\":" << v
+                  << ",\"fromR\":" << fromR
+                  << ",\"toS\":" << toS
+                  << ",\"pickIdx\":" << pickIdx
+                  << ",\"cands\":[";
+                for (size_t j = 0; j < cands.size(); ++j) { if (j) o << ","; o << cands[j]; }
+                o << "],\"dS\":";
+                em.writeDouble(dS);
+                o << ",\"acceptU\":";
+                em.writeDouble(acceptU);
+                o << ",\"accept\":" << (accept ? "true" : "false")
+                  << ",\"moved\":" << (committed ? "true" : "false")
+                  << "}";
+            }
+            totalAccepted += sweepAccepted;
+            o << "],\"S_post\":";
+            em.writeDouble(st.entropy());
+            o << ",\"accepted\":" << sweepAccepted
+              << ",\"Bne_post\":" << st.Bne
+              << "}";
+            // Propagate: rebuild level-(l+1)..L graphs from updated e_rs at this level.
+            // The hierarchy entries for those upper levels are reused;
+            // remap per the new compaction.
+            for (int up = l + 1; up < L; ++up) {
+                LevelGraph rebuilt = buildLevelGraph(*graphs[up - 1], *states[up - 1],
+                                                    hierarchy[up]);
+                graphs[up].reset(new Graph(std::move(rebuilt.g)));
+                states[up].reset(new BlockState(*graphs[up], Mode::NDC, rebuilt.init));
+            }
+        }
+        o << "],\"S_post\":";
+        em.writeDouble(totalEntropy());
+        o << "}";
+    }
+    o << "],\"S_final\":";
+    em.writeDouble(totalEntropy());
+    o << ",\"level_S_final\":[";
+    for (int l = 0; l < L; ++l) { if (l) o << ","; em.writeDouble(states[l]->entropy()); }
+    o << "],\"accepted_total\":" << totalAccepted
+      << ",\"level_final_membership\":[";
+    for (int l = 0; l < L; ++l) {
+        if (l) o << ",";
+        o << "[";
+        for (int v = 0; v < states[l]->N; ++v) {
+            if (v) o << ",";
+            o << states[l]->b[v];
+        }
+        o << "]";
+    }
+    o << "]}\n";
+    std::cout << o.str();
+    return 0;
+}
+
 int main(int argc, char** argv) try {
     Args args = parseArgs(argc, argv);
     Mode mode = parseMode(args.mode);
 
     Graph g = loadEdges(args.edge);
     std::vector<int> init = loadInitMembership(args.init, g.idToOrig);
+
+    if (args.nested) {
+        return runNested(args, mode, g, init);
+    }
 
     BlockState st(g, mode, init);
     JSRng rng((uint32_t)args.seed);

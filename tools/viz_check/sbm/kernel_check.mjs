@@ -27,17 +27,25 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const args = process.argv.slice(2);
 if (args.length < 3) {
-  console.error("usage: kernel_check.mjs <cpp_trace.json> <edge.csv> <mode:dc|ndc|pp>");
+  console.error("usage: kernel_check.mjs <cpp_trace.json> <edge.csv> <mode:dc|ndc|pp> [--nested]");
   process.exit(2);
 }
-const [tracePath, edgePath, mode] = args;
+const tracePath = args[0];
+const edgePath = args[1];
+const mode = args[2];
+const nestedFlag = args.includes("--nested");
 if (!["dc", "ndc", "pp"].includes(mode)) {
   console.error("mode must be one of dc, ndc, pp");
   process.exit(2);
 }
 
 const trace = JSON.parse(fs.readFileSync(tracePath, "utf8"));
-if (trace.mode !== mode) {
+if (nestedFlag) {
+  if (trace.variant !== `nested-${mode}`) {
+    console.error(`trace variant "${trace.variant}" != cli "nested-${mode}"`);
+    process.exit(2);
+  }
+} else if (trace.mode !== mode) {
   console.error(`trace mode "${trace.mode}" != cli mode "${mode}"`);
   process.exit(2);
 }
@@ -50,6 +58,7 @@ await import(path.join(WEB, "louvain/louvain.js"));
 await import(path.join(WEB, "sbm/util.js"));
 await import(path.join(WEB, "sbm/block_state.js"));
 await import(path.join(WEB, "sbm/mcmc.js"));
+await import(path.join(WEB, "sbm/nested_state.js"));
 
 // Load edges using the trace's renum_to_orig so node ids align with cpp's.
 function loadEdges(edgePath, renum) {
@@ -76,6 +85,13 @@ const N = renum.length;
 const edges = loadEdges(edgePath, renum);
 
 const G = COMDET.LOUVAIN.Graph(N, edges, { correctSelfLoops: false });
+
+// Nested replay branches early; the flat path below still drives the
+// majority of variants.
+if (nestedFlag) {
+  await runNestedReplay(G, trace);
+  process.exit(0);
+}
 const stateOpts = { mode: mode, init: trace.init_membership };
 const state = COMDET.SBM.BlockState(G, stateOpts);
 
@@ -180,3 +196,123 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(`PASS: byte-equal trace + final partition (n=${N}, ${trace.sweeps.length} sweeps).`);
+
+// ── Nested replay ───────────────────────────────────────────────────
+async function runNestedReplay(G0, trace) {
+  // Build initial level stack from trace.hierarchy.
+  const hier = trace.hierarchy.map((arr) => Int32Array.from(arr));
+  const graphs = [G0];
+  const states = [COMDET.SBM.BlockState(G0, { mode: mode, init: hier[0] })];
+  for (let l = 1; l < hier.length; l++) {
+    const built = COMDET.SBM.buildLevelGraph(graphs[l - 1], states[l - 1], hier[l]);
+    graphs.push(built.graph);
+    states.push(COMDET.SBM.BlockState(built.graph, { mode: "ndc", init: built.init }));
+  }
+
+  const failures = [];
+  function check(cond, msg) { if (!cond) failures.push(msg); }
+
+  function totalS() {
+    let S = 0;
+    for (const st of states) S += st.entropy();
+    return S;
+  }
+  const REL_S_TOL = 1e-12;
+  const ABS_dS_TOL = 1e-7;
+  function withinRelS(drift, S) { return drift <= REL_S_TOL * Math.max(1, Math.abs(S)); }
+
+  // Anchor: total S_init.
+  const S_init_js = totalS();
+  const S_init_drift = Math.abs(S_init_js - trace.S_init);
+  check(withinRelS(S_init_drift, trace.S_init),
+        `total S_init drift ${S_init_drift.toExponential(3)}`);
+  // Per-level S_init.
+  for (let l = 0; l < states.length; l++) {
+    const sl_js = states[l].entropy();
+    const sl_cpp = trace.level_S_init[l];
+    const d = Math.abs(sl_js - sl_cpp);
+    check(withinRelS(d, sl_cpp),
+          `level ${l} S_init drift ${d.toExponential(3)} (js=${sl_js}, cpp=${sl_cpp})`);
+  }
+
+  let dSMax = 0, totalVisits = 0, mismatches = 0;
+  const rngStub = COMDET.LOUVAIN.MT19937(0);
+
+  for (let sw = 0; sw < trace.sweeps.length; sw++) {
+    const swTrace = trace.sweeps[sw];
+    for (let li = 0; li < swTrace.levels.length; li++) {
+      const lvl = swTrace.levels[li];
+      const l = lvl.level;
+      const oracle = (v, i, cands) => {
+        const t = lvl.visits[i];
+        return { to_block: t.toS, accept: t.accept };
+      };
+      const out = COMDET.SBM.mcmcSweep(states[l], rngStub, {
+        visitOrder: lvl.visit_order,
+        proposalOracle: oracle,
+        recordTrace: true,
+        beta: trace.beta,
+      });
+      if (out.traces.length !== lvl.visits.length) {
+        failures.push(`sweep ${sw} level ${l}: visit count mismatch js=${out.traces.length} cpp=${lvl.visits.length}`);
+        break;
+      }
+      for (let i = 0; i < lvl.visits.length; i++) {
+        const t = lvl.visits[i];
+        const j = out.traces[i];
+        totalVisits++;
+        if (j.v !== t.v || j.fromR !== t.fromR || j.toS !== t.toS
+            || j.pickIdx !== t.pickIdx || j.accept !== t.accept
+            || j.accepted !== t.moved) mismatches++;
+        const d = Math.abs(j.dS - t.dS);
+        if (d > dSMax) dSMax = d;
+      }
+      const S_post_js = states[l].entropy();
+      const dPost = Math.abs(S_post_js - lvl.S_post);
+      if (!withinRelS(dPost, lvl.S_post))
+        failures.push(`sweep ${sw} level ${l}: S_post drift ${dPost.toExponential(3)}`);
+
+      // Propagate updated e_rs to all upper levels.
+      for (let up = l + 1; up < states.length; up++) {
+        const built = COMDET.SBM.buildLevelGraph(graphs[up - 1], states[up - 1], hier[up]);
+        graphs[up] = built.graph;
+        states[up] = COMDET.SBM.BlockState(built.graph, { mode: "ndc", init: built.init });
+      }
+    }
+    // Sweep-level total S check.
+    const S_sw_js = totalS();
+    const dSW = Math.abs(S_sw_js - swTrace.S_post);
+    if (!withinRelS(dSW, swTrace.S_post))
+      failures.push(`sweep ${sw}: total S_post drift ${dSW.toExponential(3)}`);
+  }
+
+  if (mismatches > 0) failures.push(`${mismatches}/${totalVisits} per-visit mismatches`);
+  if (dSMax > ABS_dS_TOL) failures.push(`dS max drift ${dSMax.toExponential(3)} > ${ABS_dS_TOL}`);
+
+  // Final per-level membership.
+  let memDiffs = 0;
+  for (let l = 0; l < states.length; l++) {
+    const m_js = states[l].blockMembership();
+    const m_cpp = trace.level_final_membership[l];
+    if (m_js.length !== m_cpp.length) {
+      failures.push(`level ${l} membership length mismatch`);
+      continue;
+    }
+    for (let v = 0; v < m_js.length; v++) if (m_js[v] !== m_cpp[v]) memDiffs++;
+  }
+  if (memDiffs > 0) failures.push(`final per-level membership ${memDiffs} entries differ`);
+
+  console.log(`=== SBM nested-${mode} replay ===`);
+  console.log(`levels=${states.length} n=${N} sweeps=${trace.sweeps.length} visits=${totalVisits}`);
+  console.log(`total S: js=${totalS().toFixed(15)} cpp=${trace.S_final.toFixed(15)}`);
+  console.log(`max dS drift = ${dSMax.toExponential(3)}`);
+  console.log(`per-visit mismatches = ${mismatches}`);
+  console.log(`final per-level membership diffs = ${memDiffs}`);
+
+  if (failures.length > 0) {
+    console.error("FAIL:");
+    for (const f of failures) console.error("  " + f);
+    process.exit(1);
+  }
+  console.log(`PASS: byte-equal nested trace + final per-level partition (${states.length} levels, ${trace.sweeps.length} sweeps).`);
+}

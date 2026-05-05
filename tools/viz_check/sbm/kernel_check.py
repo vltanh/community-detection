@@ -56,13 +56,13 @@ ENTROPY_CHECK = HERE / "entropy_check.py"
 CONDA_ENV = os.environ.get("SBM_CONDA_ENV", "nwbench")
 
 VARIANT_TO_MODES = {
-    "flat-dc":     ["dc"],
-    "flat-ndc":    ["ndc"],
-    "flat-pp":     ["pp"],
-    "nested-dc":   ["dc"],
-    "nested-ndc":  ["ndc"],
-    "flat-best":   ["dc", "ndc", "pp"],
-    "nested-best": ["dc", "ndc"],
+    "flat-dc":     [("dc",  False)],
+    "flat-ndc":    [("ndc", False)],
+    "flat-pp":     [("pp",  False)],
+    "nested-dc":   [("dc",  True)],
+    "nested-ndc":  [("ndc", True)],
+    "flat-best":   [("dc",  False), ("ndc", False), ("pp", False)],
+    "nested-best": [("dc",  True),  ("ndc", True)],
 }
 
 
@@ -78,20 +78,21 @@ def run_canonical_check(edge: Path, com: Path, mode: str, S_cpp: float,
 
 
 def run_one(name: str, edge: Path, com: Path, work: Path,
-            variant_label: str, mode: str, args) -> int:
-    print(f"\n=== {name} (variant={variant_label}, mode={mode}, "
+            variant_label: str, mode: str, nested: bool, args) -> int:
+    label = f"nested-{mode}" if nested else f"flat-{mode}"
+    print(f"\n=== {name} (variant={variant_label}, kernel={label}, "
           f"seed={args.seed}, sweeps={args.sweeps}) ===")
     failures = 0
-    out_json = work / f"{name}_sbm_{variant_label}_{mode}_tracer.json"
+    out_json = work / f"{name}_sbm_{variant_label}_{mode}{'_nested' if nested else ''}_tracer.json"
 
     # Leg B: instrumented C++ tracer.
-    rc = subprocess.run([str(TRACER),
-                         f"--mode={mode}",
-                         f"--edge={edge}",
-                         f"--init={com}",
-                         f"--seed={args.seed}",
-                         f"--sweeps={args.sweeps}"],
-                        capture_output=True, text=True)
+    cpp_args = [str(TRACER), f"--mode={mode}", f"--edge={edge}",
+                f"--init={com}", f"--seed={args.seed}",
+                f"--sweeps={args.sweeps}"]
+    if nested:
+        cpp_args.append("--nested")
+        cpp_args.append(f"--auto-levels={args.levels}")
+    rc = subprocess.run(cpp_args, capture_output=True, text=True)
     if rc.returncode != 0:
         sys.stderr.write(rc.stdout + rc.stderr)
         return 1
@@ -102,28 +103,42 @@ def run_one(name: str, edge: Path, com: Path, work: Path,
     trace = json.loads(out_json.read_text())
     S_init = trace["S_init"]
     S_final = trace["S_final"]
-    Bne_init = trace["Bne_init"]
-    Bne_final = trace["Bne_final"]
     accepted = trace["accepted_total"]
-    print(f"  cpp tracer: S_init={S_init:.6f} S_final={S_final:.6f} "
-          f"Bne {Bne_init}->{Bne_final} accepted={accepted}/{args.sweeps * trace['n']}")
+    if nested:
+        L = len(trace["level_S_init"])
+        bne_initial = trace["level_Bne_init"]
+        bne_str = "Bne[" + ",".join(str(x) for x in bne_initial) + "]"
+        print(f"  cpp tracer: levels={L} S_total={S_init:.6f} -> {S_final:.6f} "
+              f"{bne_str} accepted={accepted}")
+    else:
+        Bne_init = trace["Bne_init"]
+        Bne_final = trace["Bne_final"]
+        print(f"  cpp tracer: S_init={S_init:.6f} S_final={S_final:.6f} "
+              f"Bne {Bne_init}->{Bne_final} accepted={accepted}/{args.sweeps * trace['n']}")
 
     # Leg A (optional): graph-tool / Python entropy-at-fixed-partition.
+    # The canonical leg covers level-0 entropy only; nested upper-level
+    # entropy is verified within the JS replay leg (cpp + JS use the
+    # same self-consistent formula; full graph-tool nested parity is a
+    # follow-up task).
     if not args.no_canonical_check and ENTROPY_CHECK.exists():
-        ok, log = run_canonical_check(edge, com, mode, S_init,
+        S_anchor = trace["level_S_init"][0] if nested else S_init
+        ok, log = run_canonical_check(edge, com, mode, S_anchor,
                                       verbose=args.verbose)
         last = log.strip().splitlines()[-1] if log.strip() else "(no output)"
         if ok:
-            print(f"  canonical S_init match: PASS ({last})")
+            print(f"  canonical level-0 S_init match: PASS ({last})")
         else:
-            print(f"  canonical S_init match: FAIL ({last})")
+            print(f"  canonical level-0 S_init match: FAIL ({last})")
             if args.verbose:
                 print(log)
             failures += 1
 
     # Leg C: JS replay byte-equal.
-    ok, log, err = D.run_capture(["node", str(JS_REPLAY),
-                                   str(out_json), str(edge), mode])
+    replay_args = ["node", str(JS_REPLAY), str(out_json), str(edge), mode]
+    if nested:
+        replay_args.append("--nested")
+    ok, log, err = D.run_capture(replay_args)
     last = (log + err).strip().splitlines()[-1] if (log + err).strip() else "(no output)"
     if ok:
         print(f"  cpp == js_replay: PASS ({last})")
@@ -144,6 +159,9 @@ def main():
                     help="page variant; expands to one or more underlying kernel modes")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--sweeps", type=int, default=20)
+    ap.add_argument("--levels", type=int, default=4,
+                    help="depth cap for nested auto-hierarchy synthesis "
+                         "(terminates earlier when B becomes 1)")
     ap.add_argument("--no-canonical-check", action="store_true",
                     help="skip the graph-tool entropy-at-fixed-partition leg")
     args = ap.parse_args()
@@ -152,11 +170,11 @@ def main():
         sys.exit("specify --variant OR --mode, not both")
     if args.mode:
         variant_label = f"flat-{args.mode}"
-        modes = [args.mode]
+        kernels = [(args.mode, False)]
     else:
         variant = args.variant or "flat-dc"
         variant_label = variant
-        modes = VARIANT_TO_MODES[variant]
+        kernels = VARIANT_TO_MODES[variant]
 
     D.build_tracer(HERE, TRACER)
     work = D.workdir(REPO)
@@ -164,8 +182,9 @@ def main():
 
     failures = 0
     for name, edge, com in D.fixture_cases(work):
-        for mode in modes:
-            failures += run_one(name, edge, com, work, variant_label, mode, args)
+        for mode, nested in kernels:
+            failures += run_one(name, edge, com, work, variant_label,
+                                mode, nested, args)
 
     print()
     if failures:

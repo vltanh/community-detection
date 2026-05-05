@@ -23,9 +23,12 @@ INC=(
 )
 
 # Compile the forked Optimiser + traced main.
-g++ -std=c++20 -O2 -Wall "${INC[@]}" -fopenmp \
+# -ffp-contract=off prevents gcc from FMA-fusing diff_move's
+# `nv*(2.0*csize - nv - 1.0)` into a single-rounding fma; JS V8 does
+# not fma, so contract-off is required for bit-equal dQ.
+g++ -std=c++20 -O2 -Wall -ffp-contract=off "${INC[@]}" -fopenmp \
     -c "$HERE/optimiser_traced.cpp" -o "$HERE/optimiser_traced.o"
-g++ -std=c++20 -O2 -Wall "${INC[@]}" -fopenmp \
+g++ -std=c++20 -O2 -Wall -ffp-contract=off "${INC[@]}" -fopenmp \
     -c "$HERE/main_traced.cpp" -o "$HERE/main_traced.o"
 
 # Collect every libleidenalg .o EXCEPT the canonical Optimiser.cpp.o.

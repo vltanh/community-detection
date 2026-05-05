@@ -18,6 +18,8 @@ struct LeidenTraceMove {
 struct LeidenTracePass {
     size_t pass;
     size_t n_nodes_in_queue;
+    int phase;                                 // 0 = move_nodes, 1 = merge_nodes_constrained
+    size_t level;                              // collapse depth (vcount of operating graph)
     std::vector<size_t> shuffled_nodes;        // post-shuffle order
     std::vector<LeidenTraceMove> moves;
     double total_improv;
@@ -572,13 +574,16 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
       nodes.push_back(v);
   }
   shuffle(nodes, &rng);
-  // [TRACE-LD] Capture per-pass init: nb_layers, shuffled queue.
+  // [TRACE-LD] Capture per-pass init: phase, level, queue.
   gTrace.passes.push_back({});
   size_t pass_idx = gTrace.passes.size() - 1;
   gTrace.passes[pass_idx].pass = pass_idx;
+  gTrace.passes[pass_idx].phase = 0;       // move_nodes
+  gTrace.passes[pass_idx].level = n;       // current graph vcount = "level" proxy
   gTrace.passes[pass_idx].n_nodes_in_queue = nodes.size();
   gTrace.passes[pass_idx].shuffled_nodes = nodes;
-  fprintf(stderr, "[TRACE-LD] PASS_BEGIN pass=%zu queue=%zu\n", pass_idx, nodes.size());
+  fprintf(stderr, "[TRACE-LD] PASS_BEGIN pass=%zu phase=move level=%zu queue=%zu\n",
+          pass_idx, n, nodes.size());
   deque<size_t> vertex_order(nodes.begin(), nodes.end());
 
   // Initialize the degree vector
@@ -1328,6 +1333,17 @@ double Optimiser::merge_nodes_constrained(vector<MutableVertexPartition*> partit
   // But if we use a random order, we shuffle this order.
   shuffle(vertex_order, &rng);
 
+  // [TRACE-LD] Capture refine pass init: phase=1, level (graph vcount), shuffled queue.
+  gTrace.passes.push_back({});
+  size_t pass_idx_refine = gTrace.passes.size() - 1;
+  gTrace.passes[pass_idx_refine].pass = pass_idx_refine;
+  gTrace.passes[pass_idx_refine].phase = 1;     // merge_nodes_constrained
+  gTrace.passes[pass_idx_refine].level = n;     // current graph vcount
+  gTrace.passes[pass_idx_refine].n_nodes_in_queue = vertex_order.size();
+  gTrace.passes[pass_idx_refine].shuffled_nodes = vertex_order;
+  fprintf(stderr, "[TRACE-LD] PASS_BEGIN pass=%zu phase=refine level=%zu queue=%zu\n",
+          pass_idx_refine, n, vertex_order.size());
+
   vector< vector<size_t> > constrained_comms = constrained_partition->get_communities();
 
   vector<bool> comm_added(partitions[0]->n_communities(), false);
@@ -1445,6 +1461,19 @@ double Optimiser::merge_nodes_constrained(vector<MutableVertexPartition*> partit
         }
       }
 
+      // [TRACE-LD] Capture this refine visit's decision (singletons only).
+      {
+          LeidenTraceMove m;
+          m.pass = pass_idx_refine;
+          m.visit_idx = gTrace.passes[pass_idx_refine].moves.size();
+          m.v = v;
+          m.from_comm = v_comm;
+          m.to_comm = max_comm;
+          m.dQ = (max_comm != v_comm) ? max_improv : 0.0;
+          m.moved = (max_comm != v_comm);
+          gTrace.passes[pass_idx_refine].moves.push_back(m);
+      }
+
       // If we actually plan to move the node
       if (max_comm != v_comm)
       {
@@ -1500,5 +1529,18 @@ double Optimiser::merge_nodes_constrained(vector<MutableVertexPartition*> partit
       cerr << "Renumbered communities for layer " << layer << " for " << partitions[layer]->n_communities() << " communities." << endl;
     #endif //DEBUG
   }
+  // [TRACE-LD] Capture refine pass-end totals + post-renumber membership.
+  gTrace.passes[pass_idx_refine].total_improv = total_improv;
+  gTrace.passes[pass_idx_refine].nb_moves = 0; // refine doesn't track nb_moves like move_nodes
+  // Count actual moves from trace.
+  for (auto const& mm : gTrace.passes[pass_idx_refine].moves)
+      if (mm.moved) gTrace.passes[pass_idx_refine].nb_moves++;
+  {
+      auto const& mem = partitions[0]->membership();
+      gTrace.passes[pass_idx_refine].post_membership.assign(mem.begin(), mem.end());
+  }
+  fprintf(stderr, "[TRACE-LD] PASS_END pass=%zu phase=refine nb_moves=%zu improv=%.6f visits=%zu\n",
+          pass_idx_refine, gTrace.passes[pass_idx_refine].nb_moves,
+          total_improv, gTrace.passes[pass_idx_refine].moves.size());
   return total_improv;
 }

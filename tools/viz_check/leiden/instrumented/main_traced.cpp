@@ -35,6 +35,8 @@ struct LeidenTraceMove {
 };
 struct LeidenTracePass {
     size_t pass; size_t n_nodes_in_queue;
+    int phase;                                 // 0 = move_nodes, 1 = merge_nodes_constrained
+    size_t level;                              // graph vcount at this pass
     std::vector<size_t> shuffled_nodes;
     std::vector<LeidenTraceMove> moves;
     double total_improv;
@@ -122,6 +124,8 @@ int main(int argc, char** argv) {
         if (pi) std::cout << ",\n";
         const auto& p = trace.passes[pi];
         std::cout << "    {\"pass\":" << p.pass
+                  << ",\"phase\":\"" << (p.phase == 0 ? "move" : "refine") << "\""
+                  << ",\"level\":" << p.level
                   << ",\"queue\":" << p.n_nodes_in_queue
                   << ",\"nb_moves\":" << p.nb_moves
                   << ",\"total_improv\":" << p.total_improv

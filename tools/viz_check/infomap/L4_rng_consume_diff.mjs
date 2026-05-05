@@ -25,10 +25,13 @@ const WEB = path.join(__dirname, "../../../vltanh.github.io/comdet/js");
 await import(path.join(WEB, "louvain/louvain.js"));
 await import(path.join(WEB, "infomap/infomap_canon.js"));
 
-// Load tracer JSON. The tracer prepends a [TRACE-IM] line; skip it.
-const raw = fs.readFileSync(tracerJsonPath, "utf-8");
-const tracerJson = raw.replace(/^[^{]*\n/, "");
-const tracer = JSON.parse(tracerJson);
+// Load tracer JSON. The tracer prepends + appends [TRACE-IM] log lines.
+let raw = fs.readFileSync(tracerJsonPath, "utf-8");
+// Drop any leading non-JSON line
+if (raw[0] !== "{") raw = raw.slice(raw.indexOf("\n") + 1);
+// Drop any trailing non-JSON content after the matching closing brace.
+const endBrace = raw.lastIndexOf("}");
+const tracer = JSON.parse(raw.slice(0, endBrace + 1));
 
 const mainCalls = tracer.calls.filter(c => tracer.levels[c.l].is_main);
 const cppPerCall = mainCalls.map((c, i) => ({

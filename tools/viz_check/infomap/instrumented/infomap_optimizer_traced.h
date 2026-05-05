@@ -51,7 +51,8 @@ extern void traceMoveAfter(InfomapBase& base, InfoNode& current,
                             double nDE, double nDX);
 extern void traceCallBegin(InfomapBase& base,
                             const std::vector<unsigned int>& visitOrder,
-                            bool is_first_loop);
+                            bool is_first_loop,
+                            const std::vector<unsigned int>& rng_peek);
 extern void traceVisitAfter(InfomapBase& base,
                              unsigned int v_active_id,
                              const std::vector<unsigned int>& linkOrder,
@@ -351,11 +352,21 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
 {
   // Get random enumeration of nodes
   auto& network = m_infomap->activeNetwork();
+  // [TRACE-IM] Peek next 5 raw mt() outputs from a COPY of m_rand BEFORE
+  // the visit-order shuffle consumes them. Layout-stable reinterpret:
+  // Random has no vtable + m_randGen is the first member.
+  std::vector<unsigned int> rng_peek;
+  rng_peek.reserve(5);
+  {
+    std::mt19937 rng_copy =
+        *reinterpret_cast<std::mt19937*>(&m_infomap->m_rand);
+    for (int k = 0; k < 5; ++k) rng_peek.push_back(static_cast<unsigned int>(rng_copy()));
+  }
   std::vector<unsigned int> nodeEnumeration(network.size());
   m_infomap->m_rand.getRandomizedIndexVector(nodeEnumeration);
 
-  // [TRACE-IM] dump the random visit order for the JS replay's oracle.
-  traceCallBegin(*m_infomap, nodeEnumeration, m_infomap->isFirstLoop());
+  // [TRACE-IM] dump the random visit order + RNG peek for the JS replay's oracle.
+  traceCallBegin(*m_infomap, nodeEnumeration, m_infomap->isFirstLoop(), rng_peek);
 
   auto numNodes = nodeEnumeration.size();
   unsigned int numMoved = 0;

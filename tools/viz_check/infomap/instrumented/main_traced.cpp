@@ -77,6 +77,7 @@ struct InfomapTraceCall {
     bool is_first_loop = true;
     std::vector<unsigned int> visit_order;
     std::vector<InfomapTraceVisit> visits;
+    std::vector<unsigned int> rng_peek;
 };
 struct InfomapTrace {
     double L_final = 0.0;
@@ -324,7 +325,9 @@ int main(int argc, char** argv) {
         if (ci) std::cout << ",\n";
         std::cout << "    {\"l\":" << c.level_idx
                   << ",\"fl\":" << (c.is_first_loop ? 1 : 0)
-                  << ",\"vo\":[";
+                  << ",\"rng\":[";
+        emit_uint_array(c.rng_peek);
+        std::cout << "],\"vo\":[";
         emit_uint_array(c.visit_order);
         std::cout << "],\"visits\":[";
         for (size_t vi = 0; vi < c.visits.size(); vi++) {

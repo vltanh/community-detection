@@ -150,6 +150,13 @@ struct InfomapTraceCall {
                                         // controls tryMoveEach's first-loop guard
   std::vector<unsigned int> visit_order;
   std::vector<InfomapTraceVisit> visits;
+  // [TRACE-IM] RNG state probe: peek next 5 raw uint32 outputs from
+  // m_infomap->m_rand at this call boundary by drawing from a COPY of
+  // the engine state (the original is unchanged). JS L4_rng_state_diff
+  // mirrors the same probe at its corresponding boundary; the first
+  // call where rng_peek diverges localises L4 self-RNG divergence to a
+  // sub-Infomap RNG-stream offset.
+  std::vector<unsigned int> rng_peek;
 };
 
 struct InfomapTrace {
@@ -241,12 +248,14 @@ void traceMoveAfter(InfomapBase& base, InfoNode& current,
 
 void traceCallBegin(InfomapBase& /*base*/,
                     const std::vector<unsigned int>& visitOrder,
-                    bool is_first_loop)
+                    bool is_first_loop,
+                    const std::vector<unsigned int>& rng_peek)
 {
   InfomapTraceCall call;
   call.level_idx = static_cast<int>(g_infomap_trace.levels.size()) - 1;
   call.is_first_loop = is_first_loop;
   call.visit_order = visitOrder;
+  call.rng_peek = rng_peek;
   g_infomap_trace.calls.push_back(std::move(call));
 }
 

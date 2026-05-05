@@ -127,11 +127,22 @@ def main() -> int:
                     help="fixture32 + dnc only (skip gnm inputs)")
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 4,
                     help="parallel worker processes")
+    ap.add_argument("--working-tree", action="store_true",
+                    help="run replay against the working-tree louvain.js "
+                    "instead of the HEAD-pinned copy. Catches uncommitted "
+                    "kernel edits before they ship.")
     args = ap.parse_args()
     seeds = [int(s) for s in args.seeds.split(",")]
 
     D.build_tracer(HERE, TRACER, script_name="build_l4.sh")
-    louvain_js = ensure_louvain_head_js()
+    if args.working_tree:
+        web = find_web_repo()
+        louvain_js = web / "comdet" / "js" / "louvain" / "louvain.js"
+        if not louvain_js.is_file():
+            sys.exit(f"working-tree louvain.js not found: {louvain_js}")
+        print(f"[working-tree] using {louvain_js}\n")
+    else:
+        louvain_js = ensure_louvain_head_js()
     os.environ["LOUVAIN_JS"] = str(louvain_js)
 
     inputs = [

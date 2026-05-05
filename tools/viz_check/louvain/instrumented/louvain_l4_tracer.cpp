@@ -494,14 +494,20 @@ struct Partition {
         invalidateCache();
     }
 
-    // Sort surviving comms by csize DESC (mirror louvain.js:458-493).
-    // STABLE sort: ties broken by original comm-id ASC (since the `order`
-    // vector is built by iterating c=0..ncomm and appending).
+    // Sort surviving comms by csize DESC, cnodes DESC, then orig-id
+    // ASC (mirror louvain.js Partition.renumber libleidenalg
+    // orderCSize tiebreak chain). The cnodes tiebreak decouples from
+    // csize at level 1+ where nodeSize is super-node weight > 1; at
+    // level 0 with nodeSize=1 it's redundant with csize but harmless.
     void renumber() {
         std::vector<int32_t> order;
         for (int32_t c = 0; c < ncomm; c++) if (cnodes[c] > 0) order.push_back(c);
-        std::stable_sort(order.begin(), order.end(),
-            [this](int32_t a, int32_t b) { return csize[a] > csize[b]; });
+        std::sort(order.begin(), order.end(),
+            [this](int32_t a, int32_t b) {
+                if (csize[a] != csize[b]) return csize[a] > csize[b];
+                if (cnodes[a] != cnodes[b]) return cnodes[a] > cnodes[b];
+                return a < b;
+            });
         std::vector<int32_t> remap(ncomm, -1);
         for (size_t i = 0; i < order.size(); i++) remap[order[i]] = (int32_t)i;
         for (int32_t v = 0; v < n; v++) membership[v] = remap[membership[v]];

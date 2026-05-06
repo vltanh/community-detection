@@ -212,6 +212,35 @@ struct InfomapTracePartitionBail {
   bool bailed = false;
 };
 
+// [TRACE-IM] per-findTop-loop-iter probe. Captures every gate input +
+// decision so we can diff cpp vs JS findTopModulesRepeatedly traversal
+// step-by-step. Each entry == one outer loop iter inside
+// findTopModulesRepeatedly (== one super-net level).
+struct InfomapTraceFindTopIter {
+  // Stage-tag context: tag of the partition() stage that owns this
+  // findTopModulesRepeatedly call (e.g. "findTopModulesRepeatedly_0",
+  // "findTopModulesRepeatedly_after_coarseTune_2").
+  std::string stage_label;
+  bool is_main = true;             // outermost partition() vs sub-Infomap
+  unsigned int tune_iter_idx = 0;  // m_tuneIterationIndex at call time
+  unsigned int aggregation_level = 0;
+  unsigned int num_levels_consolidated = 0;
+  unsigned int active_n = 0;
+  unsigned int num_top_modules_pre = 0;  // numTopModules() pre-iter
+  bool have_modules_pre = false;          // haveModules() pre-iter
+  double L_pre_optimize = 0.0;            // m_objective.L just after initPartition
+  unsigned int num_optimization_loops = 0;
+  double L_post_optimize = 0.0;           // m_objective.L after optimizeActiveNetwork
+  double L_consolidated_pre = 0.0;        // m_consolidatedObjective.L at gate
+                                          // (== last_consolidate_L tracker)
+  double minImpr = 0.0;                   // minimumSingleNodeCodelengthImprovement
+  bool gate_failed = false;               // restoreConsolidated returned true
+  double L_after_gate = 0.0;              // m_objective.L immediately after gate
+  bool consolidated = false;              // did we consolidate after gate?
+  double L_post_consolidate = 0.0;        // m_objective.L after consolidate
+  unsigned int num_top_modules_post = 0;  // numTopModules() post-iter
+};
+
 struct InfomapTrace {
   double L_final = 0.0;
   unsigned int num_leaf_nodes = 0;
@@ -221,6 +250,7 @@ struct InfomapTrace {
   std::vector<InfomapTraceCall> calls;
   std::vector<InfomapTraceCoarseSub> coarseTune_subs;
   std::vector<InfomapTracePartitionBail> partition_bails;
+  std::vector<InfomapTraceFindTopIter> findTop_iters;
 };
 
 static InfomapTrace g_infomap_trace;
@@ -229,10 +259,27 @@ static InfomapTrace g_infomap_trace;
 // Used by traceMoveAfter to recover the stable id of `current`.
 static std::map<InfoNode*, unsigned int> g_level_active_id;
 
+// [TRACE-IM] Tracks m_objective.codelength right after every
+// consolidateModules() call. Equivalent to m_consolidatedObjective.L
+// (consolidate doesn't change codelength; m_consolidatedObjective is
+// then a copy of m_objective). At the next findTopModulesRepeatedly
+// gate, this value is the threshold the gate compares against.
+//
+// Stack of values, pushed/popped at sub-Infomap (coarseTune) recursion
+// boundaries so nested instances don't clobber the outer tracker.
+static std::vector<double> g_last_consolidated_L_stack = { 0.0 };
+// Current stage label (set by traceCaptureStage / explicitly set via
+// setCurrentStageLabel before findTopModulesRepeatedly calls).
+static std::string g_current_stage_label;
+// is_main flag for the active partition() invocation (toggled by
+// findTopModulesRepeatedly probe based on InfomapBase's m_isMain).
+
 InfomapTrace& getInfomapTrace() { return g_infomap_trace; }
 void resetInfomapTrace() {
   g_infomap_trace = InfomapTrace();
   g_level_active_id.clear();
+  g_last_consolidated_L_stack = { 0.0 };
+  g_current_stage_label.clear();
 }
 
 void traceBeginLevel(InfomapBase& base, bool is_main)
@@ -396,6 +443,9 @@ void traceMoveProbe(unsigned int oldM,
 
 static void traceCaptureStage(InfomapBase& self, const std::string& label)
 {
+  // [TRACE-IM] track current stage tag so per-findTop-loop-iter probes
+  // can attribute themselves to the right partition() phase.
+  g_current_stage_label = label;
   InfomapTraceStage st;
   st.label = label;
   st.L = self.getCodelength();
@@ -1109,6 +1159,9 @@ InfomapBase& InfomapBase::initPartition(std::vector<unsigned int>& modules, bool
   initPartition(); // TODO: confusing same name, should be able to init default without arguments here too
   moveActiveNodesToPredefinedModules(modules);
   consolidateModules(false);
+  // [TRACE-IM] track consolidated L
+  if (!g_last_consolidated_L_stack.empty())
+    g_last_consolidated_L_stack.back() = getCodelength();
 
   if (hard) {
     // Save the original network
@@ -1778,11 +1831,26 @@ void InfomapBase::findTopModulesRepeatedly(unsigned int maxLevels)
 
   // Reapply core algorithm on modular network, replacing modules with super modules
   while (numTopModules() > 1 && numLevelsConsolidated != maxLevels) {
+    // [TRACE-IM] gate-state probe: capture per-iter inputs.
+    InfomapTraceFindTopIter ftIter;
+    ftIter.stage_label = g_current_stage_label;
+    ftIter.is_main = isMainInfomap();
+    ftIter.tune_iter_idx = m_tuneIterationIndex;
+    ftIter.aggregation_level = m_aggregationLevel;
+    ftIter.num_levels_consolidated = numLevelsConsolidated;
+    ftIter.num_top_modules_pre = numTopModules();
+    ftIter.have_modules_pre = haveModules();
+    ftIter.minImpr = minimumSingleNodeCodelengthImprovement;
+    if (!g_last_consolidated_L_stack.empty()) {
+      ftIter.L_consolidated_pre = g_last_consolidated_L_stack.back();
+    }
     if (haveModules())
       setActiveNetworkFromChildrenOfRoot();
     else
       setActiveNetworkFromLeafs();
     initPartition();
+    ftIter.active_n = static_cast<unsigned int>(activeNetwork().size());
+    ftIter.L_pre_optimize = getCodelength();
     if (m_aggregationLevel == 0) {
       initialCodelength = io::Str() << "" << *this;
     }
@@ -1791,12 +1859,18 @@ void InfomapBase::findTopModulesRepeatedly(unsigned int maxLevels)
     Log(3) << "Level " << (numLevelsConsolidated + 1) << " (codelength: " << *this << "): Moving " << activeNetwork().size() << " nodes... " << std::flush;
     // Core loop, merging modules
     unsigned int numOptimizationLoops = optimizeActiveNetwork();
+    ftIter.num_optimization_loops = numOptimizationLoops;
+    ftIter.L_post_optimize = getCodelength();
 
     Log(1, 2) << numOptimizationLoops << ", " << std::flush;
     Log(3) << "done! -> codelength " << *this << " in " << numActiveModules() << " modules.\n";
 
     // If no improvement, revert codelength terms to the last consolidated state
     if (haveModules() && restoreConsolidatedOptimizationPointIfNoImprovement()) {
+      ftIter.gate_failed = true;
+      ftIter.L_after_gate = getCodelength();
+      ftIter.num_top_modules_post = numTopModules();
+      g_infomap_trace.findTop_iters.push_back(std::move(ftIter));
       Log(3) << "-> Restored to codelength " << *this << " in " << numTopModules() << " modules.\n";
       break;
     }
@@ -1804,6 +1878,15 @@ void InfomapBase::findTopModulesRepeatedly(unsigned int maxLevels)
     // Consolidate modules
     bool replaceExistingModules = haveModules();
     consolidateModules(replaceExistingModules);
+    ftIter.consolidated = true;
+    ftIter.L_post_consolidate = getCodelength();
+    ftIter.L_after_gate = ftIter.L_post_optimize;
+    ftIter.num_top_modules_post = numTopModules();
+    g_infomap_trace.findTop_iters.push_back(std::move(ftIter));
+    // Update the consolidated-L tracker (== m_consolidatedObjective.L
+    // after this consolidate).
+    if (!g_last_consolidated_L_stack.empty())
+      g_last_consolidated_L_stack.back() = getCodelength();
     ++numLevelsConsolidated;
     ++m_aggregationLevel;
   }
@@ -1846,7 +1929,16 @@ unsigned int InfomapBase::fineTune()
     // Delete existing modules and consolidate fine-tuned modules
     root().replaceChildrenWithGrandChildren();
     consolidateModules(false);
+    // [TRACE-IM] track consolidated L (fineTune end)
+    if (!g_last_consolidated_L_stack.empty())
+      g_last_consolidated_L_stack.back() = getCodelength();
     Log(4) << "Fine-tune done in " << numEffectiveLoops << " effective loops to codelength " << *this << " in " << numTopModules() << " modules.\n";
+  }
+  if (isMainInfomap()) {
+    std::fprintf(stderr,
+        "[TRACE-IM] fineTune end: numEff=%u L=%.17g consolL=%.17g\n",
+        numEffectiveLoops, getCodelength(),
+        g_last_consolidated_L_stack.empty() ? 0.0 : g_last_consolidated_L_stack.back());
   }
 
   return numEffectiveLoops;
@@ -1894,7 +1986,13 @@ unsigned int InfomapBase::coarseTune()
       InfomapBase& subInfomap = getSubInfomap(node)
                                     .setTwoLevel(true)
                                     .setTuneIterationLimit(1);
+      // [TRACE-IM] sub-Infomap has its own m_consolidatedObjective
+      // tracker; push a fresh entry for the sub run, pop after.
+      g_last_consolidated_L_stack.push_back(0.0);
+      std::string saved_stage = g_current_stage_label;
       subInfomap.initNetwork(node).run();
+      g_last_consolidated_L_stack.pop_back();
+      g_current_stage_label = saved_stage;
 
       auto originalLeafIt = node.begin_child();
       for (auto& subLeafPtr : subInfomap.leafNodes()) {
@@ -1942,6 +2040,9 @@ unsigned int InfomapBase::coarseTune()
 
   // Replace existing modules but store that structure on the sub-modules
   consolidateModules(true);
+  // [TRACE-IM] track consolidated L (coarseTune Phase 3)
+  if (!g_last_consolidated_L_stack.empty())
+    g_last_consolidated_L_stack.back() = getCodelength();
 
   Log(4) << "Consolidated " << numTopModules() << " sub-modules to codelength " << *this << '\n';
 
@@ -1959,10 +2060,30 @@ unsigned int InfomapBase::coarseTune()
   moveActiveNodesToPredefinedModules(modules);
 
   Log(4) << "Tune sub-modules from codelength " << *this << " in " << numActiveModules() << " modules... \n";
+  if (isMainInfomap()) {
+    std::fprintf(stderr,
+        "[TRACE-IM] coarseTune Phase4 pre-optimize: L=%.17g activeN=%zu\n",
+        getCodelength(), activeNetwork().size());
+  }
   // Continue to optimize from there to tune sub-modules
   unsigned int numEffectiveLoops = optimizeActiveNetwork();
+  if (isMainInfomap()) {
+    std::fprintf(stderr,
+        "[TRACE-IM] coarseTune Phase4 post-optimize: numEff=%u L=%.17g\n",
+        numEffectiveLoops, getCodelength());
+  }
   Log(4) << "Tuned sub-modules in " << numEffectiveLoops << " effective loops to codelength " << *this << " in " << numActiveModules() << " modules.\n";
   consolidateModules(true);
+  // [TRACE-IM] track consolidated L (coarseTune end)
+  if (!g_last_consolidated_L_stack.empty())
+    g_last_consolidated_L_stack.back() = getCodelength();
+  if (isMainInfomap()) {
+    std::fprintf(stderr,
+        "[TRACE-IM] coarseTune end: L=%.17g consolL=%.17g numTopMod=%u\n",
+        getCodelength(),
+        g_last_consolidated_L_stack.empty() ? 0.0 : g_last_consolidated_L_stack.back(),
+        numTopModules());
+  }
   Log(4) << "Consolidated tuned sub-modules to codelength " << *this << " in " << numTopModules() << " modules.\n";
   return numEffectiveLoops;
 }

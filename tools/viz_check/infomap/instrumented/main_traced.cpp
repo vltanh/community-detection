@@ -109,6 +109,26 @@ struct InfomapTracePartitionBail {
     bool have_non_trivial = false;
     bool bailed = false;
 };
+struct InfomapTraceFindTopIter {
+    std::string stage_label;
+    bool is_main = true;
+    unsigned int tune_iter_idx = 0;
+    unsigned int aggregation_level = 0;
+    unsigned int num_levels_consolidated = 0;
+    unsigned int active_n = 0;
+    unsigned int num_top_modules_pre = 0;
+    bool have_modules_pre = false;
+    double L_pre_optimize = 0.0;
+    unsigned int num_optimization_loops = 0;
+    double L_post_optimize = 0.0;
+    double L_consolidated_pre = 0.0;
+    double minImpr = 0.0;
+    bool gate_failed = false;
+    double L_after_gate = 0.0;
+    bool consolidated = false;
+    double L_post_consolidate = 0.0;
+    unsigned int num_top_modules_post = 0;
+};
 struct InfomapTrace {
     double L_final = 0.0;
     unsigned int num_leaf_nodes = 0;
@@ -118,6 +138,7 @@ struct InfomapTrace {
     std::vector<InfomapTraceCall> calls;
     std::vector<InfomapTraceCoarseSub> coarseTune_subs;
     std::vector<InfomapTracePartitionBail> partition_bails;
+    std::vector<InfomapTraceFindTopIter> findTop_iters;
 };
 extern InfomapTrace& getInfomapTrace();
 extern void resetInfomapTrace();
@@ -438,6 +459,31 @@ int main(int argc, char** argv) {
                   << ",\"kBefore\":" << b.num_top_before
                   << ",\"haveNonTriv\":" << (b.have_non_trivial ? 1 : 0)
                   << ",\"bailed\":" << (b.bailed ? 1 : 0) << "}";
+    }
+    std::cout << "\n  ],\n";
+
+    std::cout << "  \"findTop_iters\": [\n";
+    for (size_t fi = 0; fi < trace.findTop_iters.size(); fi++) {
+        const auto& f = trace.findTop_iters[fi];
+        if (fi) std::cout << ",\n";
+        std::cout << "    {\"stage\":\"" << f.stage_label << "\""
+                  << ",\"isMain\":" << (f.is_main ? 1 : 0)
+                  << ",\"tuneIdx\":" << f.tune_iter_idx
+                  << ",\"agg\":" << f.aggregation_level
+                  << ",\"numLevConsol\":" << f.num_levels_consolidated
+                  << ",\"activeN\":" << f.active_n
+                  << ",\"kPre\":" << f.num_top_modules_pre
+                  << ",\"haveMod\":" << (f.have_modules_pre ? 1 : 0)
+                  << ",\"L_pre\":" << f.L_pre_optimize
+                  << ",\"numOptLoops\":" << f.num_optimization_loops
+                  << ",\"L_post\":" << f.L_post_optimize
+                  << ",\"L_consol\":" << f.L_consolidated_pre
+                  << ",\"minImpr\":" << f.minImpr
+                  << ",\"gateFail\":" << (f.gate_failed ? 1 : 0)
+                  << ",\"L_aft\":" << f.L_after_gate
+                  << ",\"consol\":" << (f.consolidated ? 1 : 0)
+                  << ",\"L_postConsol\":" << f.L_post_consolidate
+                  << ",\"kPost\":" << f.num_top_modules_post << "}";
     }
     std::cout << "\n  ]\n}\n";
     std::cout.flush();

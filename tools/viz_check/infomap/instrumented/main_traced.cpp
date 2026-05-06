@@ -91,6 +91,23 @@ struct InfomapTraceCall {
     std::vector<InfomapTraceVisit> visits;
     std::vector<unsigned int> rng_peek;
 };
+struct InfomapTraceCoarseSub {
+    unsigned int top_idx = 0;
+    unsigned int members = 0;
+    unsigned int child_deg = 0;
+    unsigned int sub_num_top_modules = 0;
+    unsigned int offset_after = 0;
+    bool short_path = false;
+};
+struct InfomapTracePartitionBail {
+    bool is_main = true;
+    unsigned int n_leaves = 0;
+    double one_level_L = 0.0;
+    double final_L = 0.0;
+    unsigned int num_top_before = 0;
+    bool have_non_trivial = false;
+    bool bailed = false;
+};
 struct InfomapTrace {
     double L_final = 0.0;
     unsigned int num_leaf_nodes = 0;
@@ -98,6 +115,8 @@ struct InfomapTrace {
     std::vector<InfomapTraceLevel> levels;
     std::vector<InfomapTraceMove> moves;
     std::vector<InfomapTraceCall> calls;
+    std::vector<InfomapTraceCoarseSub> coarseTune_subs;
+    std::vector<InfomapTracePartitionBail> partition_bails;
 };
 extern InfomapTrace& getInfomapTrace();
 extern void resetInfomapTrace();
@@ -386,14 +405,41 @@ int main(int argc, char** argv) {
         }
         std::cout << "]}";
     }
+    std::cout << "\n  ],\n";
+
+    std::cout << "  \"coarseTune_subs\": [\n";
+    for (size_t si = 0; si < trace.coarseTune_subs.size(); si++) {
+        const auto& p = trace.coarseTune_subs[si];
+        if (si) std::cout << ",\n";
+        std::cout << "    {\"top\":" << p.top_idx
+                  << ",\"members\":" << p.members
+                  << ",\"childDeg\":" << p.child_deg
+                  << ",\"kSub\":" << p.sub_num_top_modules
+                  << ",\"offsetAfter\":" << p.offset_after
+                  << ",\"shortPath\":" << (p.short_path ? 1 : 0) << "}";
+    }
+    std::cout << "\n  ],\n";
+
+    std::cout << "  \"partition_bails\": [\n";
+    for (size_t bi = 0; bi < trace.partition_bails.size(); bi++) {
+        const auto& b = trace.partition_bails[bi];
+        if (bi) std::cout << ",\n";
+        std::cout << "    {\"isMain\":" << (b.is_main ? 1 : 0)
+                  << ",\"n\":" << b.n_leaves
+                  << ",\"oneLevelL\":" << b.one_level_L
+                  << ",\"finalL\":" << b.final_L
+                  << ",\"kBefore\":" << b.num_top_before
+                  << ",\"haveNonTriv\":" << (b.have_non_trivial ? 1 : 0)
+                  << ",\"bailed\":" << (b.bailed ? 1 : 0) << "}";
+    }
     std::cout << "\n  ]\n}\n";
     std::cout.flush();
     std::fflush(stdout);
 
     std::fprintf(stderr,
-                 "[TRACE-IM] L_canon=%.17g num_modules=%u stages=%zu levels=%zu moves=%zu calls=%zu\n",
+                 "[TRACE-IM] L_canon=%.17g num_modules=%u stages=%zu levels=%zu moves=%zu calls=%zu coarseSubs=%zu\n",
                  L_canon, im.numTopModules(), trace.stages.size(),
                  trace.levels.size(), trace.moves.size(),
-                 trace.calls.size());
+                 trace.calls.size(), trace.coarseTune_subs.size());
     return 0;
 }

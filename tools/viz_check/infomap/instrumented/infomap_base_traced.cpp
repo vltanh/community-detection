@@ -180,6 +180,32 @@ struct InfomapTraceCall {
   std::vector<unsigned int> rng_peek;
 };
 
+// [TRACE-IM] coarseTune sub-Infomap probe. Per top-module pass through
+// the main coarseTune loop we record what cpp counted as that module's
+// sub-Infomap output. JS replay records the same fields and a diff
+// localises the K_sub mismatch (cpp 64 vs JS 90 on dnc s1) to the
+// first top-module whose K_sub differs.
+struct InfomapTraceCoarseSub {
+  unsigned int top_idx = 0;            // child index in m_root iteration
+  unsigned int members = 0;            // node.childDegree() (leaf count)
+  unsigned int child_deg = 0;          // node.childDegree() (same as members for leaf-only)
+  unsigned int sub_num_top_modules = 0; // subInfomap.numTopModules() (or 1 for childDegree<2 short path)
+  unsigned int offset_after = 0;        // moduleIndexOffset after this top-module
+  bool short_path = false;              // true if childDegree<2 short path taken
+};
+
+// [TRACE-IM] partition() bail-out probe. Per call to partition() (main
+// + every sub-Infomap), capture the bail-out gate values + decision.
+struct InfomapTracePartitionBail {
+  bool is_main = true;
+  unsigned int n_leaves = 0;
+  double one_level_L = 0.0;
+  double final_L = 0.0;
+  unsigned int num_top_before = 0;
+  bool have_non_trivial = false;
+  bool bailed = false;
+};
+
 struct InfomapTrace {
   double L_final = 0.0;
   unsigned int num_leaf_nodes = 0;
@@ -187,6 +213,8 @@ struct InfomapTrace {
   std::vector<InfomapTraceLevel> levels;
   std::vector<InfomapTraceMove> moves;
   std::vector<InfomapTraceCall> calls;
+  std::vector<InfomapTraceCoarseSub> coarseTune_subs;
+  std::vector<InfomapTracePartitionBail> partition_bails;
 };
 
 static InfomapTrace g_infomap_trace;
@@ -1482,6 +1510,19 @@ void InfomapBase::partition()
     Log() << " (" << m_numNonTrivialTopModules << " non-trivial)";
   Log() << " modules.\n";
 
+  {
+    InfomapTracePartitionBail pb;
+    pb.is_main = isMainInfomap();
+    pb.n_leaves = numLeafNodes();
+    pb.one_level_L = getOneLevelCodelength();
+    pb.final_L = getCodelength();
+    pb.num_top_before = numTopModules();
+    pb.have_non_trivial = haveNonTrivialModules();
+    pb.bailed = !preferModularSolution && preferredNumberOfModules == 0
+                && pb.have_non_trivial && pb.final_L > pb.one_level_L;
+    g_infomap_trace.partition_bails.push_back(pb);
+  }
+
   if (!preferModularSolution && preferredNumberOfModules == 0 && haveNonTrivialModules() && getCodelength() > getOneLevelCodelength()) {
     Log() << "Worse codelength than one-level codelength, putting all nodes in one module... ";
 
@@ -1819,6 +1860,8 @@ unsigned int InfomapBase::coarseTune()
   }
 
   unsigned int moduleIndexOffset = 0;
+  unsigned int trace_top_idx = 0;
+  const bool trace_emit = isMainInfomap();
   for (auto& node : m_root) {
     // Don't search for sub-modules in too small modules
     if (node.childDegree() < 2) {
@@ -1826,6 +1869,17 @@ unsigned int InfomapBase::coarseTune()
         child.index = moduleIndexOffset;
       }
       moduleIndexOffset += 1;
+      if (trace_emit) {
+        InfomapTraceCoarseSub p;
+        p.top_idx = trace_top_idx;
+        p.members = node.childDegree();
+        p.child_deg = node.childDegree();
+        p.sub_num_top_modules = 1;
+        p.offset_after = moduleIndexOffset;
+        p.short_path = true;
+        g_infomap_trace.coarseTune_subs.push_back(p);
+      }
+      ++trace_top_idx;
       continue;
     } else {
       InfomapBase& subInfomap = getSubInfomap(node)
@@ -1839,7 +1893,20 @@ unsigned int InfomapBase::coarseTune()
         originalLeafIt->index = subLeaf.index + moduleIndexOffset;
         ++originalLeafIt;
       }
-      moduleIndexOffset += subInfomap.numTopModules();
+      const unsigned int subTop = subInfomap.numTopModules();
+      moduleIndexOffset += subTop;
+
+      if (trace_emit) {
+        InfomapTraceCoarseSub p;
+        p.top_idx = trace_top_idx;
+        p.members = node.childDegree();
+        p.child_deg = node.childDegree();
+        p.sub_num_top_modules = subTop;
+        p.offset_after = moduleIndexOffset;
+        p.short_path = false;
+        g_infomap_trace.coarseTune_subs.push_back(p);
+      }
+      ++trace_top_idx;
 
       node.disposeInfomap();
     }

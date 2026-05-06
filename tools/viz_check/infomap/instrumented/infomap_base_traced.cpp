@@ -192,6 +192,12 @@ struct InfomapTraceCoarseSub {
   unsigned int sub_num_top_modules = 0; // subInfomap.numTopModules() (or 1 for childDegree<2 short path)
   unsigned int offset_after = 0;        // moduleIndexOffset after this top-module
   bool short_path = false;              // true if childDegree<2 short path taken
+  // Leaf order under this top-module = order parent.children() yields
+  // them = order they were added to parent during the prior multi-level
+  // findTop's consolidate chain. Each entry = main leaf compact id (=
+  // child's stateId). JS replay uses this to mirror cpp's
+  // generateSubNetwork(parent) leaf iteration order byte-for-byte.
+  std::vector<unsigned int> leaf_state_ids;
 };
 
 // [TRACE-IM] partition() bail-out probe. Per call to partition() (main
@@ -1877,6 +1883,9 @@ unsigned int InfomapBase::coarseTune()
         p.sub_num_top_modules = 1;
         p.offset_after = moduleIndexOffset;
         p.short_path = true;
+        for (auto& child : node) {
+          p.leaf_state_ids.push_back(child.stateId);
+        }
         g_infomap_trace.coarseTune_subs.push_back(p);
       }
       ++trace_top_idx;
@@ -1904,6 +1913,9 @@ unsigned int InfomapBase::coarseTune()
         p.sub_num_top_modules = subTop;
         p.offset_after = moduleIndexOffset;
         p.short_path = false;
+        for (auto& child : node) {
+          p.leaf_state_ids.push_back(child.stateId);
+        }
         g_infomap_trace.coarseTune_subs.push_back(p);
       }
       ++trace_top_idx;

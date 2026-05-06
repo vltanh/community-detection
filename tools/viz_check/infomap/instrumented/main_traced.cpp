@@ -98,6 +98,7 @@ struct InfomapTraceCoarseSub {
     unsigned int sub_num_top_modules = 0;
     unsigned int offset_after = 0;
     bool short_path = false;
+    std::vector<unsigned int> leaf_state_ids;
 };
 struct InfomapTracePartitionBail {
     bool is_main = true;
@@ -416,7 +417,13 @@ int main(int argc, char** argv) {
                   << ",\"childDeg\":" << p.child_deg
                   << ",\"kSub\":" << p.sub_num_top_modules
                   << ",\"offsetAfter\":" << p.offset_after
-                  << ",\"shortPath\":" << (p.short_path ? 1 : 0) << "}";
+                  << ",\"shortPath\":" << (p.short_path ? 1 : 0)
+                  << ",\"leafIds\":[";
+        for (size_t li = 0; li < p.leaf_state_ids.size(); li++) {
+            if (li) std::cout << ",";
+            std::cout << p.leaf_state_ids[li];
+        }
+        std::cout << "]}";
     }
     std::cout << "\n  ],\n";
 

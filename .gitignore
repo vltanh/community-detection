@@ -3,6 +3,7 @@ __pycache__
 
 # Runtime artifacts
 complete.log
+examples/
 
 # Build outputs from vendored externals
 externals/louvain/convert

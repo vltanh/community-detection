@@ -3,3 +3,10 @@ __pycache__
 
 # Runtime artifacts
 complete.log
+
+# Build outputs from vendored externals
+externals/louvain/convert
+externals/louvain/hierarchy
+externals/louvain/louvain
+externals/louvain/matrix
+src/louvain/seed_shim/*.so

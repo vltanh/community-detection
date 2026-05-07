@@ -9,6 +9,9 @@
 # and OpenMP thread count for byte-reproducible runs).
 export PYTHONHASHSEED=0
 export OMP_NUM_THREADS=1
+# OMP_NUM_THREADS pin is overridden later if --n-threads-base > 1; this trades
+# byte-level determinism for parallel speedup in OpenMP stages (graph-tool,
+# numpy/scipy BLAS). Algorithmic results remain seed-controlled.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 if [[ "${SCRIPT_DIR}" == *"/slurmd/job"* ]]; then
@@ -45,7 +48,8 @@ run_cm_flag=0
 keep_state_flag=0
 
 TIMEOUT="7d"
-N_THREADS="1"
+N_THREADS_BASE=""
+N_THREADS_POSTPROC=""
 SEED="1"
 
 while [[ "$#" -gt 0 ]]; do
@@ -68,7 +72,9 @@ while [[ "$#" -gt 0 ]]; do
         --run-cm) run_cm_flag=1; shift 1 ;;
         --keep-state) keep_state_flag=1; shift 1 ;;
         --timeout) TIMEOUT="$2"; shift 2 ;;
-        --n-threads) N_THREADS="$2"; shift 2 ;;
+        --n-threads) N_THREADS_BASE="$2"; N_THREADS_POSTPROC="$2"; shift 2 ;;
+        --n-threads-base) N_THREADS_BASE="$2"; shift 2 ;;
+        --n-threads-postproc) N_THREADS_POSTPROC="$2"; shift 2 ;;
         --seed) SEED="$2"; shift 2 ;;
         -*) log "Unknown parameter: $1"; exit 1 ;;
         *) log "Unexpected argument: $1"; exit 1 ;;
@@ -78,6 +84,19 @@ done
 if [ -z "${algo}" ]; then
     log "Error: --algo is a required parameter."
     exit 1
+fi
+
+# Thread-count resolution:
+#   --n-threads N          -> base=N, postproc=N (alias, sets both)
+#   --n-threads-base B     -> base=B, postproc=B (postproc inherits base)
+#   --n-threads-postproc P -> postproc=P, base unchanged (default 1)
+#   both -base and -postproc -> independent values, no inheritance
+N_THREADS_BASE="${N_THREADS_BASE:-1}"
+N_THREADS_POSTPROC="${N_THREADS_POSTPROC:-${N_THREADS_BASE}}"
+
+if [ "${N_THREADS_BASE}" -gt 1 ]; then
+    export OMP_NUM_THREADS="${N_THREADS_BASE}"
+    log "OMP_NUM_THREADS=${N_THREADS_BASE} (determinism off for OpenMP stages)"
 fi
 
 # ==========================================
@@ -142,8 +161,8 @@ dataset_type=""
 
 if [ "${is_real}" -eq 1 ]; then
     [ -z "${network_id}" ] && { log "Error: --network required for --real."; exit 1; }
-    custom_input="${SCRIPT_DIR}/data/empirical_networks/networks/${network_id}/${network_id}.csv"
-    custom_out_dir="${SCRIPT_DIR}/data/reference_clusterings"
+    custom_input="data/empirical_networks/networks/${network_id}/${network_id}.csv"
+    custom_out_dir="data/reference_clusterings"
     generator=""
     gt_clustering=""
     run_id=""
@@ -156,9 +175,9 @@ if [ "${is_synthetic}" -eq 1 ]; then
         exit 1
     fi
     run_id="${run_id:-0}"
-    custom_input="${SCRIPT_DIR}/data/synthetic_networks/networks/${generator}/${gt_clustering}/${network_id}/${run_id}/edge.csv"
-    custom_out_dir="${SCRIPT_DIR}/data/estimated_clusterings"
-    custom_gt="${SCRIPT_DIR}/data/reference_clusterings/clusterings/${gt_clustering}/${network_id}/com.csv"
+    custom_input="data/synthetic_networks/networks/${generator}/${gt_clustering}/${network_id}/${run_id}/edge.csv"
+    custom_out_dir="data/estimated_clusterings"
+    custom_gt="data/reference_clusterings/clusterings/${gt_clustering}/${network_id}/com.csv"
     dataset_type="${generator}/${gt_clustering} (run: ${run_id})"
 fi
 
@@ -251,7 +270,7 @@ run_dependency() {
     [[ -n "${custom_out_dir}" ]] && cmd+=("--output-dir" "${custom_out_dir}")
     [[ -n "${custom_gt}" ]] && cmd+=("--input-gt-clustering" "${custom_gt}")
     [[ -n "${TIMEOUT}" ]] && cmd+=("--timeout" "${TIMEOUT}")
-    [[ -n "${N_THREADS}" ]] && cmd+=("--n-threads" "${N_THREADS}")
+    cmd+=("--n-threads-base" "${N_THREADS_BASE}" "--n-threads-postproc" "${N_THREADS_POSTPROC}")
     [[ -n "${SEED}" ]] && cmd+=("--seed" "${SEED}")
     [[ ${run_stats_flag} -eq 1 ]] && cmd+=("--run-stats")
     [[ ${run_acc_flag} -eq 1 ]] && cmd+=("--run-acc")
@@ -316,7 +335,7 @@ case "${algo}" in
             --input-edgelist "${inp_edge}" \
             --output-dir "${base_dir}" \
             --model cpm --resolution "${leiden_res}" \
-            --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS}" \
+            --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS_BASE}" \
             "${keep_state_arg[@]}"
         ;;
     leiden-mod)
@@ -324,14 +343,14 @@ case "${algo}" in
             --input-edgelist "${inp_edge}" \
             --output-dir "${base_dir}" \
             --model mod \
-            --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS}" \
+            --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS_BASE}" \
             "${keep_state_arg[@]}"
         ;;
     louvain-*)
         louvain_args=(--input-edgelist "${inp_edge}"
                       --output-dir "${base_dir}"
                       --quality "${louvain_quality}"
-                      --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS}")
+                      --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS_BASE}")
         case "${louvain_quality}" in
             mod|zahn|goldberg|condora|devind|devuni|dp|balmod) ;;
             owzad)
@@ -350,7 +369,7 @@ case "${algo}" in
         bash "${SCRIPT_DIR}/src/infomap/pipeline.sh" \
             --input-edgelist "${inp_edge}" \
             --output-dir "${base_dir}" \
-            --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS}" \
+            --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS_BASE}" \
             "${keep_state_arg[@]}"
         ;;
     ikc-*)
@@ -358,7 +377,7 @@ case "${algo}" in
             --input-edgelist "${inp_edge}" \
             --output-dir "${base_dir}" \
             --k "${ikc_k}" \
-            --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS}" \
+            --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS_BASE}" \
             "${keep_state_arg[@]}"
         ;;
     sbm-flat-dc|sbm-flat-ndc|sbm-flat-pp|sbm-nested-dc|sbm-nested-ndc)
@@ -366,7 +385,7 @@ case "${algo}" in
             --input-edgelist "${inp_edge}" \
             --output-dir "${base_dir}" \
             --method "${sbm_model}" \
-            --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS}" \
+            --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS_BASE}" \
             "${keep_state_arg[@]}"
         ;;
     sbm-flat-best)
@@ -463,7 +482,7 @@ run_postproc() {
             bash "${SCRIPT_DIR}/src/cc/pipeline.sh" \
                 --input-edgelist "${inp_edge}" --base-com "${base_com}" \
                 --output-dir "${out_dir}" --binary "${CC_BINARY}" \
-                --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS}" \
+                --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS_POSTPROC}" \
                 "${keep_state_arg[@]}"
             ;;
         wcc)
@@ -471,14 +490,14 @@ run_postproc() {
                 --input-edgelist "${inp_edge}" --base-com "${base_com}" \
                 --output-dir "${out_dir}" --binary "${CC_BINARY}" \
                 --criterion "${crit}" \
-                --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS}" \
+                --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS_POSTPROC}" \
                 "${keep_state_arg[@]}"
             ;;
         cm)
             local cm_args=(--input-edgelist "${inp_edge}" --base-com "${base_com}"
                            --output-dir "${out_dir}" --binary "${CC_BINARY}"
                            --criterion "${crit}"
-                           --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS}")
+                           --seed "${SEED}" --timeout "${TIMEOUT}" --n-threads "${N_THREADS_POSTPROC}")
             if [[ ${algo} == leiden-cpm-* ]]; then
                 cm_args+=(--base-algo leiden-cpm --base-resolution "${leiden_res}")
             elif [[ ${algo} == leiden-mod ]]; then

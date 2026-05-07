@@ -80,6 +80,21 @@ extern void traceMoveProbe(unsigned int oldM,
                             double deltaEnterOld, double deltaExitOld,
                             double deltaEnterNew, double deltaExitNew,
                             double node_enter, double node_exit, double node_flow);
+// [TRACE-IM] Per-visit decision probe: candidate set + tie-break + pair-pull.
+extern void traceVisitDecision(unsigned int v,
+                               const std::vector<unsigned int>& cand_modules,
+                               const std::vector<double>& cand_dE,
+                               const std::vector<double>& cand_dX,
+                               const std::vector<double>& cand_dL,
+                               unsigned int bestM, double bestDeltaL,
+                               unsigned int strongestM, double strongestDeltaL,
+                               bool strongestPicked,
+                               unsigned int numLinkedInOld,
+                               int pairPullV, unsigned int pairPullOldM,
+                               bool pairPullTriggered);
+// [TRACE-IM] Lookup helper: stable active-id for an InfoNode at the
+// current level (-1 if not in level table).
+extern int lookupLevelActiveId(InfoNode* node);
 }
 
 namespace infomap {
@@ -491,6 +506,16 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
     DeltaFlowDataType strongestConnectedModule(oldModuleDelta);
     double deltaCodelengthOnStrongestConnectedModule = 0.0;
 
+    // [TRACE-IM] candidate set probe (logged in moduleEnumeration order).
+    std::vector<unsigned int> _probe_cand_modules;
+    std::vector<double> _probe_cand_dE;
+    std::vector<double> _probe_cand_dX;
+    std::vector<double> _probe_cand_dL;
+    _probe_cand_modules.reserve(numModuleLinks);
+    _probe_cand_dE.reserve(numModuleLinks);
+    _probe_cand_dX.reserve(numModuleLinks);
+    _probe_cand_dL.reserve(numModuleLinks);
+
     // Find the move that minimizes the description length
     for (unsigned int k = 0; k < numModuleLinks; ++k) {
       auto j = moduleEnumeration[k];
@@ -501,6 +526,11 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
                                                                             moduleDeltaEnterExit[j],
                                                                             m_moduleFlowData,
                                                                             m_moduleMembers);
+        // [TRACE-IM] record candidate (skip same-module entry).
+        _probe_cand_modules.push_back(otherModule);
+        _probe_cand_dE.push_back(moduleDeltaEnterExit[j].deltaEnter);
+        _probe_cand_dX.push_back(moduleDeltaEnterExit[j].deltaExit);
+        _probe_cand_dL.push_back(deltaCodelength);
 
         if (deltaCodelength < bestDeltaCodelength - m_infomap->minimumSingleNodeCodelengthImprovement) {
           bestDeltaModule = moduleDeltaEnterExit[j];
@@ -515,9 +545,17 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
       }
     }
 
+    // [TRACE-IM] snapshot best vs strongest BEFORE tie-break override.
+    unsigned int _probe_bestM_pre = bestDeltaModule.module;
+    double _probe_bestDL = bestDeltaCodelength;
+    unsigned int _probe_strongM = strongestConnectedModule.module;
+    double _probe_strongDL = deltaCodelengthOnStrongestConnectedModule;
+    bool _probe_strongPicked = false;
+
     // Prefer strongest connected module if equal delta codelength
     if (strongestConnectedModule.module != bestDeltaModule.module && deltaCodelengthOnStrongestConnectedModule <= bestDeltaCodelength + m_infomap->minimumSingleNodeCodelengthImprovement) {
       bestDeltaModule = strongestConnectedModule;
+      _probe_strongPicked = true;
     }
 
     // Make best possible move
@@ -593,8 +631,14 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
         }
       }
 
+      bool _probe_pairPullTriggered = false;
+      int _probe_pairPullV = -1;
       // Move single connected nodes to same module
       if (numLinkedNodesInOldModule == 1 && m_moduleMembers[oldModuleIndex] == 1) {
+        _probe_pairPullTriggered = true;
+        // Resolve pulled-along node's stable active-id BEFORE the
+        // recursive moveNodeToPredefinedModule call.
+        _probe_pairPullV = lookupLevelActiveId(nodeInOldModule);
         moveNodeToPredefinedModule(*nodeInOldModule, bestModuleIndex);
         ++numMoved;
         // Mark neighbours as dirty
@@ -628,6 +672,16 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
                      _probe_deltaEnterOld, _probe_deltaExitOld,
                      _probe_deltaEnterNew, _probe_deltaExitNew,
                      _probe_node_enter, _probe_node_exit, _probe_node_flow);
+      // [TRACE-IM] per-visit decision probe (move branch).
+      traceVisitDecision(nodeEnumeration[i],
+                         _probe_cand_modules, _probe_cand_dE, _probe_cand_dX,
+                         _probe_cand_dL,
+                         _probe_bestM_pre, _probe_bestDL,
+                         _probe_strongM, _probe_strongDL,
+                         _probe_strongPicked,
+                         numLinkedNodesInOldModule,
+                         _probe_pairPullV, oldModuleIndex,
+                         _probe_pairPullTriggered);
     } else {
       current.dirty = false;
       // [TRACE-IM] visit evaluated all candidates + decided to stay.
@@ -642,6 +696,16 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
                       probeEnterFlowLogEnterFlow(m_objective),
                       probeExitNetworkFlow(m_objective),
                       probeExitNetworkFlowLogExitNetworkFlow(m_objective));
+      // [TRACE-IM] per-visit decision probe (no-move branch).
+      traceVisitDecision(nodeEnumeration[i],
+                         _probe_cand_modules, _probe_cand_dE, _probe_cand_dX,
+                         _probe_cand_dL,
+                         _probe_bestM_pre, _probe_bestDL,
+                         _probe_strongM, _probe_strongDL,
+                         _probe_strongPicked,
+                         /*numLinkedInOld*/0,
+                         /*pairPullV*/-1, /*pairPullOldM*/current.index,
+                         /*pairPullTriggered*/false);
     }
   }
 

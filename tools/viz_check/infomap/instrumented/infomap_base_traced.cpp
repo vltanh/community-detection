@@ -162,6 +162,29 @@ struct InfomapTraceVisit {
   double deltaEnterOld = 0.0, deltaExitOld = 0.0;
   double deltaEnterNew = 0.0, deltaExitNew = 0.0;
   double node_enter = 0.0, node_exit = 0.0, node_flow = 0.0;
+  // [TRACE-IM] Per-visit decision probe fields. Recorded for EVERY
+  // visit (skipped, evaluated-and-stayed, moved). Empty arrays for
+  // pre-link-randomization skips.
+  std::vector<unsigned int> cand_modules;  // module IDs visited in
+                                            // moduleEnumeration order
+                                            // (same-module entry skipped)
+  std::vector<double> cand_dE;              // candidate deltaEnter
+  std::vector<double> cand_dX;              // candidate deltaExit
+  std::vector<double> cand_dL;              // candidate deltaCodelength
+  unsigned int bestM_pre = 0;               // bestDeltaModule.module
+                                             // BEFORE strongest-tie-break
+                                             // override (== otherwise bestM)
+  double bestDeltaL = 0.0;                  // bestDeltaCodelength
+  unsigned int strongM = 0;                 // strongestConnectedModule.module
+  double strongDeltaL = 0.0;                // deltaCodelength on strongest
+  bool strongPicked = false;                // tie-break override fired
+  unsigned int numLinkedInOld = 0;          // count of neighbours still in oldM
+  int pairPullV = -1;                       // active-id of pulled-along
+                                             // neighbour, -1 if pair-pull
+                                             // didn't trigger
+  unsigned int pairPullOldM = 0;            // oldModuleIndex (== current.index
+                                             // pre-move)
+  bool pairPullTriggered = false;
 };
 
 struct InfomapTraceCall {
@@ -403,6 +426,51 @@ void tracePredefinedModules(InfomapBase& /*base*/,
 {
   if (g_infomap_trace.levels.empty()) return;
   g_infomap_trace.levels.back().predefined_modules = modules;
+}
+
+// [TRACE-IM] Stable active-id lookup for an InfoNode at the current
+// level (used by per-visit decision probe to record pulled-along
+// neighbour's id without exposing g_level_active_id directly).
+int lookupLevelActiveId(InfoNode* node)
+{
+  auto it = g_level_active_id.find(node);
+  if (it == g_level_active_id.end()) return -1;
+  return static_cast<int>(it->second);
+}
+
+// [TRACE-IM] Per-visit decision probe — writes the candidate set,
+// best/strongest pick, tie-break flag, and pair-pull state into the
+// last visit of the last call. Called for EVERY visit (move + no-move)
+// after traceVisitAfter, so every visit row carries its decision data.
+void traceVisitDecision(unsigned int /*v*/,
+                        const std::vector<unsigned int>& cand_modules,
+                        const std::vector<double>& cand_dE,
+                        const std::vector<double>& cand_dX,
+                        const std::vector<double>& cand_dL,
+                        unsigned int bestM, double bestDeltaL,
+                        unsigned int strongestM, double strongestDeltaL,
+                        bool strongestPicked,
+                        unsigned int numLinkedInOld,
+                        int pairPullV, unsigned int pairPullOldM,
+                        bool pairPullTriggered)
+{
+  if (g_infomap_trace.calls.empty()) return;
+  auto& call = g_infomap_trace.calls.back();
+  if (call.visits.empty()) return;
+  auto& vt = call.visits.back();
+  vt.cand_modules = cand_modules;
+  vt.cand_dE = cand_dE;
+  vt.cand_dX = cand_dX;
+  vt.cand_dL = cand_dL;
+  vt.bestM_pre = bestM;
+  vt.bestDeltaL = bestDeltaL;
+  vt.strongM = strongestM;
+  vt.strongDeltaL = strongestDeltaL;
+  vt.strongPicked = strongestPicked;
+  vt.numLinkedInOld = numLinkedInOld;
+  vt.pairPullV = pairPullV;
+  vt.pairPullOldM = pairPullOldM;
+  vt.pairPullTriggered = pairPullTriggered;
 }
 
 // [TRACE-IM] per-move probe — call AFTER traceVisitAfter on moves.

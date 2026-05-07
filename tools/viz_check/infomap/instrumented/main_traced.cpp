@@ -83,6 +83,19 @@ struct InfomapTraceVisit {
     double deltaEnterOld = 0.0, deltaExitOld = 0.0;
     double deltaEnterNew = 0.0, deltaExitNew = 0.0;
     double node_enter = 0.0, node_exit = 0.0, node_flow = 0.0;
+    std::vector<unsigned int> cand_modules;
+    std::vector<double> cand_dE;
+    std::vector<double> cand_dX;
+    std::vector<double> cand_dL;
+    unsigned int bestM_pre = 0;
+    double bestDeltaL = 0.0;
+    unsigned int strongM = 0;
+    double strongDeltaL = 0.0;
+    bool strongPicked = false;
+    unsigned int numLinkedInOld = 0;
+    int pairPullV = -1;
+    unsigned int pairPullOldM = 0;
+    bool pairPullTriggered = false;
 };
 struct InfomapTraceCall {
     int level_idx = -1;
@@ -424,7 +437,36 @@ int main(int argc, char** argv) {
                       << ",\"dXn\":" << v.deltaExitNew
                       << ",\"vne\":" << v.node_enter
                       << ",\"vnx\":" << v.node_exit
-                      << ",\"vnf\":" << v.node_flow << "}";
+                      << ",\"vnf\":" << v.node_flow
+                      << ",\"cand\":[";
+            for (size_t ci2 = 0; ci2 < v.cand_modules.size(); ++ci2) {
+              if (ci2) std::cout << ",";
+              std::cout << v.cand_modules[ci2];
+            }
+            std::cout << "],\"candDE\":[";
+            for (size_t ci2 = 0; ci2 < v.cand_dE.size(); ++ci2) {
+              if (ci2) std::cout << ",";
+              std::cout << v.cand_dE[ci2];
+            }
+            std::cout << "],\"candDX\":[";
+            for (size_t ci2 = 0; ci2 < v.cand_dX.size(); ++ci2) {
+              if (ci2) std::cout << ",";
+              std::cout << v.cand_dX[ci2];
+            }
+            std::cout << "],\"candDL\":[";
+            for (size_t ci2 = 0; ci2 < v.cand_dL.size(); ++ci2) {
+              if (ci2) std::cout << ",";
+              std::cout << v.cand_dL[ci2];
+            }
+            std::cout << "],\"bM\":" << v.bestM_pre
+                      << ",\"bDL\":" << v.bestDeltaL
+                      << ",\"sM\":" << v.strongM
+                      << ",\"sDL\":" << v.strongDeltaL
+                      << ",\"sPick\":" << (v.strongPicked ? 1 : 0)
+                      << ",\"nLnk\":" << v.numLinkedInOld
+                      << ",\"ppV\":" << v.pairPullV
+                      << ",\"ppOM\":" << v.pairPullOldM
+                      << ",\"ppT\":" << (v.pairPullTriggered ? 1 : 0) << "}";
         }
         std::cout << "]}";
     }

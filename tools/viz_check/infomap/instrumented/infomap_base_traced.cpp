@@ -198,6 +198,10 @@ struct InfomapTraceCoarseSub {
   // child's stateId). JS replay uses this to mirror cpp's
   // generateSubNetwork(parent) leaf iteration order byte-for-byte.
   std::vector<unsigned int> leaf_state_ids;
+  // [TRACE-IM] per-leaf sub-Infomap output cluster id (raw subLeaf.index
+  // BEFORE moduleIndexOffset is added). Indexed parallel to leaf_state_ids.
+  // For short-path top-mods (childDegree<2) a single 0 entry per leaf.
+  std::vector<unsigned int> sub_cluster_per_leaf;
 };
 
 // [TRACE-IM] partition() bail-out probe. Per call to partition() (main
@@ -1977,6 +1981,7 @@ unsigned int InfomapBase::coarseTune()
         p.short_path = true;
         for (auto& child : node) {
           p.leaf_state_ids.push_back(child.stateId);
+          p.sub_cluster_per_leaf.push_back(0);
         }
         g_infomap_trace.coarseTune_subs.push_back(p);
       }
@@ -1994,9 +1999,12 @@ unsigned int InfomapBase::coarseTune()
       g_last_consolidated_L_stack.pop_back();
       g_current_stage_label = saved_stage;
 
+      // [TRACE-IM] Capture per-leaf sub-cluster (subLeaf.index BEFORE offset).
+      std::vector<unsigned int> _trace_sub_cluster;
       auto originalLeafIt = node.begin_child();
       for (auto& subLeafPtr : subInfomap.leafNodes()) {
         InfoNode& subLeaf = *subLeafPtr;
+        if (trace_emit) _trace_sub_cluster.push_back(subLeaf.index);
         originalLeafIt->index = subLeaf.index + moduleIndexOffset;
         ++originalLeafIt;
       }
@@ -2014,6 +2022,7 @@ unsigned int InfomapBase::coarseTune()
         for (auto& child : node) {
           p.leaf_state_ids.push_back(child.stateId);
         }
+        p.sub_cluster_per_leaf = std::move(_trace_sub_cluster);
         g_infomap_trace.coarseTune_subs.push_back(p);
       }
       ++trace_top_idx;
@@ -2062,8 +2071,9 @@ unsigned int InfomapBase::coarseTune()
   Log(4) << "Tune sub-modules from codelength " << *this << " in " << numActiveModules() << " modules... \n";
   if (isMainInfomap()) {
     std::fprintf(stderr,
-        "[TRACE-IM] coarseTune Phase4 pre-optimize: L=%.17g activeN=%zu\n",
-        getCodelength(), activeNetwork().size());
+        "[TRACE-IM] coarseTune Phase4 pre-optimize: L=%.17g activeN=%zu indexL=%.17g modL=%.17g\n",
+        getCodelength(), activeNetwork().size(),
+        getIndexCodelength(), getModuleCodelength());
   }
   // Continue to optimize from there to tune sub-modules
   unsigned int numEffectiveLoops = optimizeActiveNetwork();

@@ -1,0 +1,5 @@
+model=cpm
+n_iterations=2
+resolution=0.1
+seed=1
+weighted=false

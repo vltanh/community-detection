@@ -1,0 +1,6 @@
+2026-05-07 14:31:42,771 - INFO - Reading edgelist from /home/vltanh/Documents/netsci-research/community-detection/examples/input/synthetic_networks/networks/ec-sbm-v2/sbm-flat-best+cc/dnc/0/edge.csv...
+2026-05-07 14:31:42,787 - INFO - load_network elapsed: 0.0156 seconds
+2026-05-07 14:31:42,794 - INFO - ikc_run elapsed: 0.0074 seconds
+2026-05-07 14:31:42,795 - INFO - Removed 617 singleton clusters.
+2026-05-07 14:31:42,795 - INFO - Saved 6 valid communities to /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/ikc-5/dnc/0/com.csv
+2026-05-07 14:31:42,795 - INFO - save_results elapsed: 0.0004 seconds

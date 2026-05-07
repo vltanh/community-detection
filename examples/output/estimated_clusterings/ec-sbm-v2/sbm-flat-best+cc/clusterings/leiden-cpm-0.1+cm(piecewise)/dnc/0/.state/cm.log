@@ -1,0 +1,7 @@
+[INFO][0-0:0:0](t=0s) Running with custom connectedness criterion: piecewise
+[INFO][0-0:0:0](t=0s) Loading the initial graph
+[INFO][0-0:0:0](t=0s) Finished loading the initial graph
+[INFO][0-0:0:0](t=0s) Iteration number: 0
+[INFO][0-0:0:0](t=0s) all clusters are well-connected
+[INFO][0-0:0:0](t=0s) Total number of iterations: 1
+[INFO][0-0:0:0](t=0s) Writing output to: /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-cpm-0.1+cm(piecewise)/dnc/0/com.csv

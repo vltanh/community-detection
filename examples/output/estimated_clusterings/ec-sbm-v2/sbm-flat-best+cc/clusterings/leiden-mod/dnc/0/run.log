@@ -1,0 +1,33 @@
+=== Invocation 2026-05-07T19:31:30Z | seed=1 | keep_state=1 | pid=2400412 | host=nah-popos ===
+=== [leiden-mod] /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-mod/dnc/0/.state/time_and_err.log ===
+[leiden-mod] === 2026-05-07T19:31:30Z | pid=2400412 | host=nah-popos | EXECUTED ===
+[leiden-mod] 	Command being timed: "python /home/vltanh/Documents/netsci-research/community-detection/src/leiden/run_leiden.py --edgelist /home/vltanh/Documents/netsci-research/community-detection/examples/input/synthetic_networks/networks/ec-sbm-v2/sbm-flat-best+cc/dnc/0/edge.csv --output-directory /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-mod/dnc/0 --model mod --seed 1 --n-iterations 2 --log-file /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-mod/dnc/0/.state/run.log"
+[leiden-mod] 	User time (seconds): 0.80
+[leiden-mod] 	System time (seconds): 0.07
+[leiden-mod] 	Percent of CPU this job got: 98%
+[leiden-mod] 	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.89
+[leiden-mod] 	Average shared text size (kbytes): 0
+[leiden-mod] 	Average unshared data size (kbytes): 0
+[leiden-mod] 	Average stack size (kbytes): 0
+[leiden-mod] 	Average total size (kbytes): 0
+[leiden-mod] 	Maximum resident set size (kbytes): 124056
+[leiden-mod] 	Average resident set size (kbytes): 0
+[leiden-mod] 	Major (requiring I/O) page faults: 0
+[leiden-mod] 	Minor (reclaiming a frame) page faults: 22297
+[leiden-mod] 	Voluntary context switches: 21
+[leiden-mod] 	Involuntary context switches: 169
+[leiden-mod] 	Swaps: 0
+[leiden-mod] 	File system inputs: 0
+[leiden-mod] 	File system outputs: 24
+[leiden-mod] 	Socket messages sent: 0
+[leiden-mod] 	Socket messages received: 0
+[leiden-mod] 	Signals delivered: 0
+[leiden-mod] 	Page size (bytes): 4096
+[leiden-mod] 	Exit status: 0
+[leiden-mod] === exit=0 ===
+
+=== [leiden-mod (python)] /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-mod/dnc/0/.state/run.log ===
+[leiden-mod (python)] 2026-05-07 14:31:31,033 - INFO - load_network elapsed: 0.0358 seconds
+[leiden-mod (python)] 2026-05-07 14:31:31,091 - INFO - leiden_run elapsed: 0.0576 seconds
+[leiden-mod (python)] 2026-05-07 14:31:31,095 - INFO - save_results elapsed: 0.0040 seconds
+

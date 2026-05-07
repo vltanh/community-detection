@@ -1,0 +1,34 @@
+=== Invocation 2026-05-07T19:31:45Z | seed=1 | keep_state=1 | pid=2401662 | host=nah-popos ===
+=== [infomap] /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap/dnc/0/.state/time_and_err.log ===
+[infomap] === 2026-05-07T19:31:45Z | pid=2401662 | host=nah-popos | EXECUTED ===
+[infomap] 	Command being timed: "python /home/vltanh/Documents/netsci-research/community-detection/src/infomap/run_infomap.py --edgelist /home/vltanh/Documents/netsci-research/community-detection/examples/input/synthetic_networks/networks/ec-sbm-v2/sbm-flat-best+cc/dnc/0/edge.csv --output-directory /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap/dnc/0 --log-file /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap/dnc/0/.state/run.log"
+[infomap] 	User time (seconds): 0.34
+[infomap] 	System time (seconds): 0.04
+[infomap] 	Percent of CPU this job got: 97%
+[infomap] 	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.40
+[infomap] 	Average shared text size (kbytes): 0
+[infomap] 	Average unshared data size (kbytes): 0
+[infomap] 	Average stack size (kbytes): 0
+[infomap] 	Average total size (kbytes): 0
+[infomap] 	Maximum resident set size (kbytes): 93588
+[infomap] 	Average resident set size (kbytes): 0
+[infomap] 	Major (requiring I/O) page faults: 0
+[infomap] 	Minor (reclaiming a frame) page faults: 14846
+[infomap] 	Voluntary context switches: 21
+[infomap] 	Involuntary context switches: 99
+[infomap] 	Swaps: 0
+[infomap] 	File system inputs: 0
+[infomap] 	File system outputs: 24
+[infomap] 	Socket messages sent: 0
+[infomap] 	Socket messages received: 0
+[infomap] 	Signals delivered: 0
+[infomap] 	Page size (bytes): 4096
+[infomap] 	Exit status: 0
+[infomap] === exit=0 ===
+
+=== [infomap (python)] /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap/dnc/0/.state/run.log ===
+[infomap (python)] 2026-05-07 14:31:45,569 - INFO - Reading edgelist from /home/vltanh/Documents/netsci-research/community-detection/examples/input/synthetic_networks/networks/ec-sbm-v2/sbm-flat-best+cc/dnc/0/edge.csv...
+[infomap (python)] 2026-05-07 14:31:45,591 - INFO - load_network elapsed: 0.0219 seconds
+[infomap (python)] 2026-05-07 14:31:45,614 - INFO - infomap_run elapsed: 0.0232 seconds
+[infomap (python)] 2026-05-07 14:31:45,624 - INFO - save_results elapsed: 0.0096 seconds
+

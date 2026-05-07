@@ -1,0 +1,3 @@
+2026-05-07 14:31:31,033 - INFO - load_network elapsed: 0.0358 seconds
+2026-05-07 14:31:31,091 - INFO - leiden_run elapsed: 0.0576 seconds
+2026-05-07 14:31:31,095 - INFO - save_results elapsed: 0.0040 seconds

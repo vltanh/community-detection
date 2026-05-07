@@ -1,0 +1,5 @@
+alpha=
+epsilon=
+kmin=
+quality=mod
+seed=1

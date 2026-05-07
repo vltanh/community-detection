@@ -1,0 +1,5 @@
+model=mod
+n_iterations=2
+resolution=
+seed=1
+weighted=false

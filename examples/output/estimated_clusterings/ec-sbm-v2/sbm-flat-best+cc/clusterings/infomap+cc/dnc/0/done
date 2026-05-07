@@ -1,0 +1,4 @@
+a32eea97932958653890b066c90733f4a10679eb4bc634ab869b02b19f920918  /home/vltanh/Documents/netsci-research/community-detection/examples/input/synthetic_networks/networks/ec-sbm-v2/sbm-flat-best+cc/dnc/0/edge.csv
+7e392f77e34b7f7fd9ae40d75fb234aad1cf5b3668dbd39bfb85e234af35762d  /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap/dnc/0/com.csv
+ef721285b1e59fb0eeba603eda1953be98219ad24b88af8c5d9fe77a2403ec84  /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap+cc/dnc/0/params.txt
+81950bd7ee89ca0073bee516389a35434d477f210e10ad9d62fe2bdb230da7ae  /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap+cc/dnc/0/com.csv

@@ -1,0 +1,6 @@
+base_algo=leiden-cpm
+base_resolution=0.1
+criterion=piecewise
+mincut_type=cactus
+n_threads=1
+seed=1

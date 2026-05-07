@@ -1,0 +1,4 @@
+2026-05-07 14:31:25,837 - INFO - load_network elapsed: 0.0421 seconds
+2026-05-07 14:31:25,894 - INFO - leiden_run elapsed: 0.0574 seconds
+2026-05-07 14:31:25,897 - INFO - Dropping 259 singleton cluster(s) from com.csv
+2026-05-07 14:31:25,900 - INFO - save_results elapsed: 0.0058 seconds

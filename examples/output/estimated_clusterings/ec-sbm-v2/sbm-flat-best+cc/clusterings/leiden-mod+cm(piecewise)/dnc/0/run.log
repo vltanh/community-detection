@@ -1,0 +1,44 @@
+=== Invocation 2026-05-07T19:31:33Z | seed=1 | keep_state=1 | pid=2400621 | host=nah-popos ===
+=== [cm] /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-mod+cm(piecewise)/dnc/0/.state/time_and_err.log ===
+[cm] === 2026-05-07T19:31:33Z | pid=2400621 | host=nah-popos | EXECUTED ===
+[cm] 	Command being timed: "/home/vltanh/Documents/netsci-research/community-detection/constrained-clustering/constrained_clustering CM --mincut-type cactus --connectedness-criterion piecewise --edgelist /home/vltanh/Documents/netsci-research/community-detection/examples/input/synthetic_networks/networks/ec-sbm-v2/sbm-flat-best+cc/dnc/0/edge.csv --existing-clustering /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-mod/dnc/0/com.csv --algorithm leiden-mod --num-processors 1 --output-file /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-mod+cm(piecewise)/dnc/0/com.csv --history-file /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-mod+cm(piecewise)/dnc/0/.state/history.log --log-file /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-mod+cm(piecewise)/dnc/0/.state/cm.log --log-level 1"
+[cm] 	User time (seconds): 0.06
+[cm] 	System time (seconds): 0.00
+[cm] 	Percent of CPU this job got: 100%
+[cm] 	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.06
+[cm] 	Average shared text size (kbytes): 0
+[cm] 	Average unshared data size (kbytes): 0
+[cm] 	Average stack size (kbytes): 0
+[cm] 	Average total size (kbytes): 0
+[cm] 	Maximum resident set size (kbytes): 9312
+[cm] 	Average resident set size (kbytes): 0
+[cm] 	Major (requiring I/O) page faults: 0
+[cm] 	Minor (reclaiming a frame) page faults: 796
+[cm] 	Voluntary context switches: 3
+[cm] 	Involuntary context switches: 17
+[cm] 	Swaps: 0
+[cm] 	File system inputs: 0
+[cm] 	File system outputs: 32
+[cm] 	Socket messages sent: 0
+[cm] 	Socket messages received: 0
+[cm] 	Signals delivered: 0
+[cm] 	Page size (bytes): 4096
+[cm] 	Exit status: 0
+[cm] === exit=0 ===
+
+=== [cm (cm)] /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-mod+cm(piecewise)/dnc/0/.state/cm.log ===
+[cm (cm)] [INFO][0-0:0:0](t=0s) Running with custom connectedness criterion: piecewise
+[cm (cm)] [INFO][0-0:0:0](t=0s) Loading the initial graph
+[cm (cm)] [INFO][0-0:0:0](t=0s) Finished loading the initial graph
+[cm (cm)] [INFO][0-0:0:0](t=0s) Iteration number: 0
+[cm (cm)] [INFO][0-0:0:0](t=0s) all clusters are well-connected
+[cm (cm)] [INFO][0-0:0:0](t=0s) Total number of iterations: 2
+[cm (cm)] [INFO][0-0:0:0](t=0s) Writing output to: /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-mod+cm(piecewise)/dnc/0/com.csv
+
+=== [cm (history)] /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-mod+cm(piecewise)/dnc/0/.state/history.log ===
+[cm (history)] -1:2,0,3,8,10,7,5,4,1,6,14,15,9,11,16,12,13,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47
+[cm (history)] 0:55,56,57,58
+[cm (history)] 1:64,65,66,67,68,69,70,71,72
+[cm (history)] 2:48,49,50,51,52,53,54
+[cm (history)] 3:59,60,61,62,63
+

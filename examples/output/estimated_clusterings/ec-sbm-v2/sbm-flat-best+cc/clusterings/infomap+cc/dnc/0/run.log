@@ -1,0 +1,35 @@
+=== Invocation 2026-05-07T19:31:48Z | seed=1 | keep_state=1 | pid=2401857 | host=nah-popos ===
+=== [cc] /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap+cc/dnc/0/.state/time_and_err.log ===
+[cc] === 2026-05-07T19:31:48Z | pid=2401857 | host=nah-popos | EXECUTED ===
+[cc] 	Command being timed: "/home/vltanh/Documents/netsci-research/community-detection/constrained-clustering/constrained_clustering MincutOnly --edgelist /home/vltanh/Documents/netsci-research/community-detection/examples/input/synthetic_networks/networks/ec-sbm-v2/sbm-flat-best+cc/dnc/0/edge.csv --existing-clustering /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap/dnc/0/com.csv --num-processors 1 --output-file /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap+cc/dnc/0/com.csv --log-file /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap+cc/dnc/0/.state/cc.log --log-level 1 --connectedness-criterion 0"
+[cc] 	User time (seconds): 0.01
+[cc] 	System time (seconds): 0.00
+[cc] 	Percent of CPU this job got: 95%
+[cc] 	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.02
+[cc] 	Average shared text size (kbytes): 0
+[cc] 	Average unshared data size (kbytes): 0
+[cc] 	Average stack size (kbytes): 0
+[cc] 	Average total size (kbytes): 0
+[cc] 	Maximum resident set size (kbytes): 8152
+[cc] 	Average resident set size (kbytes): 0
+[cc] 	Major (requiring I/O) page faults: 0
+[cc] 	Minor (reclaiming a frame) page faults: 563
+[cc] 	Voluntary context switches: 1
+[cc] 	Involuntary context switches: 5
+[cc] 	Swaps: 0
+[cc] 	File system inputs: 0
+[cc] 	File system outputs: 24
+[cc] 	Socket messages sent: 0
+[cc] 	Socket messages received: 0
+[cc] 	Signals delivered: 0
+[cc] 	Page size (bytes): 4096
+[cc] 	Exit status: 0
+[cc] === exit=0 ===
+
+=== [cc (cc)] /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap+cc/dnc/0/.state/cc.log ===
+[cc (cc)] [INFO][0-0:0:0](t=0s) Running with mode (mincut of each cluster has to be greater than 0)
+[cc (cc)] [INFO][0-0:0:0](t=0s) Parsing connectedness criterion
+[cc (cc)] [INFO][0-0:0:0](t=0s) Loading the initial graph
+[cc (cc)] [INFO][0-0:0:0](t=0s) Finished loading the initial graph
+[cc (cc)] [INFO][0-0:0:0](t=0s) Writing output to: /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/infomap+cc/dnc/0/com.csv
+

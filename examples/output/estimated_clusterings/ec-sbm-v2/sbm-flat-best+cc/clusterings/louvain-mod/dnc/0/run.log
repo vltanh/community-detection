@@ -1,0 +1,37 @@
+=== Invocation 2026-05-07T19:31:36Z | seed=1 | keep_state=1 | pid=2400931 | host=nah-popos ===
+=== [louvain-mod] /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/louvain-mod/dnc/0/.state/time_and_err.log ===
+[louvain-mod] === 2026-05-07T19:31:36Z | pid=2400931 | host=nah-popos | EXECUTED ===
+[louvain-mod] 0.426889
+[louvain-mod] 	Command being timed: "python /home/vltanh/Documents/netsci-research/community-detection/src/louvain/run_louvain.py --edgelist /home/vltanh/Documents/netsci-research/community-detection/examples/input/synthetic_networks/networks/ec-sbm-v2/sbm-flat-best+cc/dnc/0/edge.csv --output-directory /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/louvain-mod/dnc/0 --quality mod --louvain-bin-dir /home/vltanh/Documents/netsci-research/community-detection/externals/louvain --seed-preload /home/vltanh/Documents/netsci-research/community-detection/src/louvain/seed_shim/louvain_seed_preload.so --seed 1 --log-file /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/louvain-mod/dnc/0/.state/run.log"
+[louvain-mod] 	User time (seconds): 0.36
+[louvain-mod] 	System time (seconds): 0.05
+[louvain-mod] 	Percent of CPU this job got: 96%
+[louvain-mod] 	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:00.43
+[louvain-mod] 	Average shared text size (kbytes): 0
+[louvain-mod] 	Average unshared data size (kbytes): 0
+[louvain-mod] 	Average stack size (kbytes): 0
+[louvain-mod] 	Average total size (kbytes): 0
+[louvain-mod] 	Maximum resident set size (kbytes): 86208
+[louvain-mod] 	Average resident set size (kbytes): 0
+[louvain-mod] 	Major (requiring I/O) page faults: 0
+[louvain-mod] 	Minor (reclaiming a frame) page faults: 14490
+[louvain-mod] 	Voluntary context switches: 36
+[louvain-mod] 	Involuntary context switches: 92
+[louvain-mod] 	Swaps: 0
+[louvain-mod] 	File system inputs: 0
+[louvain-mod] 	File system outputs: 400
+[louvain-mod] 	Socket messages sent: 0
+[louvain-mod] 	Socket messages received: 0
+[louvain-mod] 	Signals delivered: 0
+[louvain-mod] 	Page size (bytes): 4096
+[louvain-mod] 	Exit status: 0
+[louvain-mod] === exit=0 ===
+
+=== [louvain-mod (python)] /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/louvain-mod/dnc/0/.state/run.log ===
+[louvain-mod (python)] 2026-05-07 14:31:36,684 - INFO - load_network elapsed: 0.0034 seconds
+[louvain-mod (python)] 2026-05-07 14:31:36,693 - INFO - write_text elapsed: 0.0081 seconds
+[louvain-mod (python)] 2026-05-07 14:31:36,706 - INFO - convert elapsed: 0.0128 seconds
+[louvain-mod (python)] 2026-05-07 14:31:36,711 - INFO - louvain_run elapsed: 0.0054 seconds
+[louvain-mod (python)] 2026-05-07 14:31:36,716 - INFO - read_partition elapsed: 0.0048 seconds
+[louvain-mod (python)] 2026-05-07 14:31:36,722 - INFO - save_results elapsed: 0.0053 seconds
+

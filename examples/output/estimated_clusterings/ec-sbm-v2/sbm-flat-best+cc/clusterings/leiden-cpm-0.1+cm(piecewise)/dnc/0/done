@@ -1,0 +1,4 @@
+a32eea97932958653890b066c90733f4a10679eb4bc634ab869b02b19f920918  /home/vltanh/Documents/netsci-research/community-detection/examples/input/synthetic_networks/networks/ec-sbm-v2/sbm-flat-best+cc/dnc/0/edge.csv
+10fd3330c20dc76dda47c2388af1431ec320699e2c0e0ca64ad76b94337185d5  /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-cpm-0.1/dnc/0/com.csv
+e282ff9e59c44a26a090ed1727c20eeeba846b5cc6afc016802e6ed7cccda909  /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-cpm-0.1+cm(piecewise)/dnc/0/params.txt
+7a9a586f575765be31ba61be3778e9f2bacb20ee4addf66294fa01db67a5377e  /home/vltanh/Documents/netsci-research/community-detection/examples/output/estimated_clusterings/ec-sbm-v2/sbm-flat-best+cc/clusterings/leiden-cpm-0.1+cm(piecewise)/dnc/0/com.csv

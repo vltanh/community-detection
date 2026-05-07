@@ -1,0 +1,6 @@
+2026-05-07 14:31:36,684 - INFO - load_network elapsed: 0.0034 seconds
+2026-05-07 14:31:36,693 - INFO - write_text elapsed: 0.0081 seconds
+2026-05-07 14:31:36,706 - INFO - convert elapsed: 0.0128 seconds
+2026-05-07 14:31:36,711 - INFO - louvain_run elapsed: 0.0054 seconds
+2026-05-07 14:31:36,716 - INFO - read_partition elapsed: 0.0048 seconds
+2026-05-07 14:31:36,722 - INFO - save_results elapsed: 0.0053 seconds

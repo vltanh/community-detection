@@ -1,0 +1,3 @@
+criterion=0
+n_threads=1
+seed=1

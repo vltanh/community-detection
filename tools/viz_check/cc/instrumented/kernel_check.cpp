@@ -11,10 +11,24 @@
 // Shared helpers live in ../../_common/tracer_io.h. Per-algo logic
 // (the mincut_only.cpp Simple-branch loop) lives in main() below.
 //
-// Build: ./build.sh -> /tmp/cc_kernel_check
-// Run:   /tmp/cc_kernel_check <edge.csv> <com.csv> <out.csv>
+// Build: ./build.sh -> /tmp/cc_kernel_check_{canonical,swapped}
+// Run:   /tmp/cc_kernel_check_canonical <edge.csv> <com.csv> <out.csv>
 // stdout: WriteClusterQueue body + JSON trace.
 // stderr: [TRACE-CC ...] structured log.
+//
+// Skill-conformant compile-time toggle (per playbook §1):
+//   -DCANONICAL_MODE -> tracer_canonical: original RNG/FP (vacuous for CC).
+//   -DTRACER_MODE    -> tracer_swapped:   bridged RNG/FP  (vacuous for CC).
+// CC has no RNG/FP on Simple branch, so both binaries are byte-identical.
+// Toggle is here for skill conformance + future extension symmetry with
+// VieCut/WCC/CM.
+#if !defined(CANONICAL_MODE) && !defined(TRACER_MODE)
+#error "must define -DCANONICAL_MODE or -DTRACER_MODE"
+#endif
+#if defined(CANONICAL_MODE) && defined(TRACER_MODE)
+#error "exactly one of CANONICAL_MODE / TRACER_MODE must be defined"
+#endif
+
 #include <cstdio>
 #include <fstream>
 #include <iostream>
@@ -24,6 +38,12 @@
 #include "tracer_io.h"
 
 using namespace viz_check;
+
+#ifdef TRACER_MODE
+static constexpr const char* k_build_mode = "TRACER_MODE";
+#else
+static constexpr const char* k_build_mode = "CANONICAL_MODE";
+#endif
 
 // [UPSTREAM constrained.cpp:135-152] WriteClusterQueue (CC + WCC variant)
 static void WriteClusterQueue(std::queue<std::vector<int>>& q,
@@ -52,8 +72,8 @@ int main(int argc, char** argv) {
     std::string com_csv = argv[2];
     std::string out_csv = argv[3];
 
-    fprintf(stderr, "[TRACE-CC] PIPELINE_START edge=%s com=%s\n",
-            edge_csv.c_str(), com_csv.c_str());
+    fprintf(stderr, "[TRACE-CC] PIPELINE_START edge=%s com=%s build=%s\n",
+            edge_csv.c_str(), com_csv.c_str(), k_build_mode);
 
     // mincut_only.cpp:18-22
     auto orig_to_new = GetOriginalToNewIdMap(edge_csv);

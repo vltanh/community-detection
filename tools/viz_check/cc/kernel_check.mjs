@@ -74,8 +74,10 @@ const fixture = { nodes: G.nodes, edges: G.edges, gt: Array.from(G.membership) }
 const r = COMDET.CC.runCC(G.membership, { fixture });
 
 // Compare component-by-component, byte-equal.
+// Canonical's GetConnectedComponents filters singletons (`csize > 1`) at
+// constrained.h:409 — comparison must mirror that filter on the JS side.
 const cppComps = cpp.components;
-const jsComps = r.allComps;
+const jsComps = r.allComps.filter(function (c) { return c.length > 1; });
 let pass = true;
 const report = [];
 report.push(`cpp components: ${cppComps.length}`);

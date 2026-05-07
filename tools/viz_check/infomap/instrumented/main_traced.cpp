@@ -46,6 +46,7 @@ struct InfomapTraceLevel {
     double init_L = 0.0;
     double init_L_index = 0.0;
     double init_L_module = 0.0;
+    std::vector<std::vector<std::pair<unsigned int, double>>> outEdges_flow;
 };
 struct InfomapTraceMove {
     int level_idx = -1;
@@ -369,6 +370,17 @@ int main(int argc, char** argv) {
         emit_double_array(l.init_exit);
         std::cout << "],\"predef\":[";
         emit_uint_array(l.predefined_modules);
+        std::cout << "],\"oeflow\":[";
+        for (size_t i = 0; i < l.outEdges_flow.size(); i++) {
+            if (i) std::cout << ",";
+            std::cout << "[";
+            for (size_t j = 0; j < l.outEdges_flow[i].size(); j++) {
+                if (j) std::cout << ",";
+                std::cout << "[" << l.outEdges_flow[i][j].first << ","
+                          << l.outEdges_flow[i][j].second << "]";
+            }
+            std::cout << "]";
+        }
         std::cout << "]}";
     }
     std::cout << "\n  ],\n";

@@ -98,6 +98,10 @@ struct InfomapTraceLevel {
   double init_L = 0.0;
   double init_L_index = 0.0;
   double init_L_module = 0.0;
+  // Per active-vertex outEdges {target, flow}. Mirrors JS g.outEdges.
+  // Used by edge-flow diff harness to localise super-edge 1-ulp drift
+  // in lvl-N -> lvl-N+1 collapseGraph aggregation.
+  std::vector<std::vector<std::pair<unsigned int, double>>> outEdges_flow;
 };
 
 struct InfomapTraceMove {
@@ -327,12 +331,25 @@ void traceBeginLevel(InfomapBase& base, bool is_main)
   lvl.init_enter.resize(lvl.active_n);
   lvl.init_exit.resize(lvl.active_n);
   g_level_active_id.clear();
+  lvl.outEdges_flow.assign(lvl.active_n, {});
   for (unsigned int i = 0; i < lvl.active_n; ++i) {
     InfoNode* n = net[i];
     g_level_active_id[n] = i;
     lvl.init_flow[i]  = n->data.flow;
     lvl.init_enter[i] = n->data.enterFlow;
     lvl.init_exit[i]  = n->data.exitFlow;
+  }
+  // Capture per-vertex outEdges (target, flow) in cpp insertion order.
+  // Defer target resolution until after g_level_active_id is fully
+  // populated above so target index lookups succeed.
+  for (unsigned int i = 0; i < lvl.active_n; ++i) {
+    InfoNode* n = net[i];
+    lvl.outEdges_flow[i].reserve(n->outDegree());
+    for (auto& e : n->outEdges()) {
+      auto it = g_level_active_id.find(e->target);
+      unsigned int tgt = (it != g_level_active_id.end()) ? it->second : 0u;
+      lvl.outEdges_flow[i].push_back({tgt, e->data.flow});
+    }
   }
 
   // Walk leaves; for each leaf find its active ancestor + write the

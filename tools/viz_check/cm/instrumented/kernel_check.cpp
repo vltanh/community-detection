@@ -1,4 +1,4 @@
-// CM kernel cross-check, instrumented C++ leg.
+// CM kernel cross-check, instrumented C++ leg with -DCANONICAL_MODE / -DTRACER_MODE toggle.
 //
 // Verbatim copy of the CM pipeline from constrained-clustering:
 //   src/cm.cpp:3-105                  (CM::main, num_proc=1 path)
@@ -6,8 +6,19 @@
 //   includes/cm.h:41-155              (MinCutOrClusterWorker, --prune false)
 //   includes/constrained.h:301-324    (RunLeidenAndUpdatePartition)
 //   includes/constrained.h:425-471    (IsWellConnected, log branch)
-//   shared helpers (Get/Load/Read/Remove/GetCC) live in
-//   ../../_common/tracer_io.h.
+//   src/mincut_custom.cpp:3-107       (MinCutCustom::ComputeMinCut, INLINED here
+//                                      so that VieCut's instrumented sibling
+//                                      headers participate in the build via
+//                                      -I tools/viz_check/viecut/instrumented/include).
+// Shared helpers (Get/Load/Read/Remove/GetCC) live in ../../_common/tracer_io.h.
+//
+// Compile-time mode toggle (per byte-equal-tracer skill playbook §1):
+//   -DCANONICAL_MODE -> std::log + std::unordered_set/map (canonical VieCut
+//                       containers via container_swap aliases). tracer_canonical
+//                       output bit-equal to unmodified `constrained_clustering CM`.
+//   -DTRACER_MODE    -> jsLog (V8-equivalent fdlibm port) + std::set/map
+//                       (id-ASC iteration in VieCut's row-H sites). tracer_swapped
+//                       output bit-equal to JS production walker.
 //
 // Single-thread (num_proc = 1), --prune false, --algorithm leiden-cpm,
 // hardcoded 1log_10(n) criterion (configurable via argv).
@@ -15,11 +26,32 @@
 // stdout = JSON trace: {init: [...], rounds: [{pops: [...], reclusters: [...]}]}
 // stderr = [TRACE-CM ...] structured log.
 
-// Per constrained.h:1-4, mincut_custom.h MUST be included first.
-#include "mincut_custom.h"
+#if !defined(CANONICAL_MODE) && !defined(TRACER_MODE)
+#error "must define -DCANONICAL_MODE or -DTRACER_MODE"
+#endif
+#if defined(CANONICAL_MODE) && defined(TRACER_MODE)
+#error "exactly one of CANONICAL_MODE / TRACER_MODE must be defined"
+#endif
+
+// VieCut's instrumented container_swap.h must come BEFORE any VieCut header
+// so that container_swap's TracerSet/TracerMap aliases (= std::set/map under
+// TRACER_MODE) propagate into mutable_graph + heavy_edges + contract_graph +
+// recursive_cactus. Order matches viecut/instrumented/main_traced.cpp.
+#include "tools/container_swap.h"
+
+// VieCut chain for inlined MinCutCustom (instrumented sibling headers via
+// -I tools/viz_check/viecut/instrumented/include in build.sh).
+#include "algorithms/global_mincut/cactus/cactus_mincut.h"
+#include "algorithms/global_mincut/noi_minimum_cut.h"
+#include "algorithms/global_mincut/minimum_cut.h"
+#include "common/configuration.h"
+#include "common/definitions.h"
+#include "data_structure/mutable_graph.h"
+#include "tools/random_functions.h"
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -34,18 +66,95 @@
 #include <libleidenalg/Optimiser.h>
 #include "tracer_io.h"
 
+#ifdef TRACER_MODE
+  #include "js_math_port.h"
+  static inline double LOG_FN(double x) { return viz_check::jsmath::jsLog(x); }
+#else
+  static inline double LOG_FN(double x) { return std::log(x); }
+#endif
+
 using namespace viz_check;
 
-// [UPSTREAM constrained.h:425-471] IsWellConnected (log branch)
+// [UPSTREAM constrained.h:425-471] IsWellConnected (log branch). Routes log
+// through LOG_FN so TRACER_MODE picks up jsLog (audit row D closure for WCC
+// chain).
 static bool IsWellConnectedLog(double pre_computed_log,
                                int in_size, int out_size, int cut) {
-    double thr = pre_computed_log * std::log((double)(in_size + out_size));
+    double thr = pre_computed_log * LOG_FN((double)(in_size + out_size));
     bool is_close = std::abs(thr - cut) <= 1e-9;
     return !is_close && thr < cut;
 }
 
+// [UPSTREAM mincut_custom.cpp:3-107] MinCutCustom::ComputeMinCut + GetIn/Out.
+// Inlined into the tracer so VieCut's instrumented headers are used (the
+// libinternal_libs.a path would baked in canonical headers and defeat the
+// TRACER_MODE container swap).
+struct InlinedMinCut {
+    const igraph_t* graph;
+    std::string mincut_type;
+    std::vector<int> in_partition;
+    std::vector<int> out_partition;
+    InlinedMinCut(const igraph_t* g, const std::string& mt = "cactus")
+        : graph(g), mincut_type(mt) {}
+    int compute() {
+        auto cfg = configuration::getConfig();
+        cfg->find_most_balanced_cut = true;
+        cfg->threads = 1;
+        cfg->save_cut = true;
+        cfg->set_node_in_cut = true;
+        // Per upstream: random_functions::setSeed is COMMENTED OUT. m_mt
+        // stays in default-constructed state. JS port mirrors via libstdc++
+        // default seed_seq convention (chain VieCut audit row A).
+        std::shared_ptr<mutable_graph> G = std::make_shared<mutable_graph>();
+        int num_nodes = igraph_vcount(this->graph);
+        G->start_construction(num_nodes);
+        for (int i = 0; i < num_nodes; i++) {
+            NodeID cn = G->new_node();
+            G->setPartitionIndex(cn, 0);
+        }
+        igraph_eit_t eit;
+        igraph_eit_create(this->graph, igraph_ess_all(IGRAPH_EDGEORDER_ID), &eit);
+        for (; !IGRAPH_EIT_END(eit); IGRAPH_EIT_NEXT(eit)) {
+            igraph_integer_t e = IGRAPH_EIT_GET(eit);
+            int from = IGRAPH_FROM(this->graph, e);
+            int to = IGRAPH_TO(this->graph, e);
+            // [UPSTREAM mincut_custom.cpp:57-65] swap-by-uninit-comparison.
+            // The original `target_node = -1; if (from < target_node)` is a
+            // no-op since target_node is uninit-then-compared; first branch
+            // never taken. Source/target end up as (to, from). Mirrored
+            // verbatim for build-pair byte-equality.
+            int source_node = -1, target_node = -1;
+            if (from < target_node) {
+                source_node = from; target_node = to;
+            } else {
+                source_node = to; target_node = from;
+            }
+            G->new_edge(source_node, target_node, 1);
+        }
+        igraph_eit_destroy(&eit);
+        G->finish_construction();
+        G->computeDegrees();
+        std::unique_ptr<minimum_cut> mc;
+        if (mincut_type == "cactus")
+            mc = std::make_unique<cactus_mincut<std::shared_ptr<mutable_graph>>>();
+        else if (mincut_type == "noi")
+            mc = std::make_unique<noi_minimum_cut<std::shared_ptr<mutable_graph>>>();
+        else
+            throw std::runtime_error("Unknown mincut_type: " + mincut_type);
+        int edge_cut_size = mc->perform_minimum_cut(G);
+        for (int nid = 0; nid < num_nodes; nid++) {
+            if (G->getNodeInCut(nid)) in_partition.push_back(nid);
+            else out_partition.push_back(nid);
+        }
+        return edge_cut_size;
+    }
+};
+
 // [UPSTREAM cm.h:12-39] RunClusterOnPartition (leiden-cpm only)
-// + [UPSTREAM constrained.h:301-324] RunLeidenAndUpdatePartition
+// + [UPSTREAM constrained.h:301-324] RunLeidenAndUpdatePartition.
+// Leiden side stays canonical: per Leiden audit row A-M, JS Leiden L4 closed
+// bit-equal under canonical libleidenalg + igraph_rng. No TRACER_MODE swap
+// needed on Leiden side.
 static std::vector<std::vector<int>>
 RunClusterOnPartition(const igraph_t* graph, double resolution, int seed,
                       std::vector<int>& partition,
@@ -122,6 +231,9 @@ int main(int argc, char** argv) {
     double resolution = (argc >= 6) ? std::stod(argv[5]) : 0.0001;
     int seed = (argc >= 7) ? std::atoi(argv[6]) : 0;
 
+    fprintf(stderr, "[TRACE-CM] PIPELINE_START build=%s edge=%s com=%s\n",
+            k_build_mode, edge_csv.c_str(), com_csv.c_str());
+
     // Parse Clog_x(n).
     double C = 1.0, x = 10.0;
     {
@@ -134,8 +246,10 @@ int main(int argc, char** argv) {
         C = std::stod(criterion.substr(0, p1));
         x = std::stod(criterion.substr(p1 + 4, p2 - (p1 + 4)));
     }
-    double pre_log = C / std::log(x);
-    fprintf(stderr, "[TRACE-CM] criterion='%s' pre_log=%.6f resolution=%.6f seed=%d\n",
+    // Pre-compute log per WCC audit row E: precompute c / log(x) ONCE; per-call
+    // uses pre_log * log(in+out). LOG_FN routes via jsLog under TRACER_MODE.
+    double pre_log = C / LOG_FN(x);
+    fprintf(stderr, "[TRACE-CM] criterion='%s' pre_log=%.17g resolution=%.6f seed=%d\n",
             criterion.c_str(), pre_log, resolution, seed);
 
     auto orig_to_new = GetOriginalToNewIdMap(edge_csv);
@@ -211,11 +325,12 @@ int main(int argc, char** argv) {
             std::map<int,int> new_to_old;
             for (size_t i = 0; i < cur.size(); i++) new_to_old[i] = VECTOR(idmap)[i];
 
-            // No --prune: skip the prune loop. Run mincut once.
-            MinCutCustom mcc(&sub, "cactus");
-            int cut = mcc.ComputeMinCut();
-            std::vector<int> in_local = mcc.GetInPartition();
-            std::vector<int> out_local = mcc.GetOutPartition();
+            // No --prune: skip the prune loop. Run mincut once via inlined
+            // VieCut (instrumented headers picked up via -I order).
+            InlinedMinCut mcc(&sub, "cactus");
+            int cut = mcc.compute();
+            std::vector<int> in_local = mcc.in_partition;
+            std::vector<int> out_local = mcc.out_partition;
             bool wc = IsWellConnectedLog(pre_log, in_local.size(), out_local.size(), cut);
 
             PopRecord rec;
@@ -224,15 +339,20 @@ int main(int argc, char** argv) {
             rec.cluster_id = current_cluster_id;
             rec.n = cur.size();
             rec.cut = cut;
-            rec.threshold = pre_log * std::log((double)cur.size());
+            rec.threshold = pre_log * LOG_FN((double)cur.size());
             rec.wc = wc;
             rec.cluster_nodes = cur;
             for (int i : in_local)  rec.in_partition.push_back(VECTOR(idmap)[i]);
             for (int i : out_local) rec.out_partition.push_back(VECTOR(idmap)[i]);
 
-            fprintf(stderr, "[TRACE-CM]   POP r=%d idx=%d cid=%d n=%d cut=%d thr=%.6f wc=%s\n",
-                    rec.round, rec.pop_idx, rec.cluster_id, rec.n, rec.cut, rec.threshold,
-                    wc ? "true" : "false");
+            // Reinterpret threshold as uint64 for byte-equal diff harness.
+            uint64_t thr_bits;
+            std::memcpy(&thr_bits, &rec.threshold, 8);
+            fprintf(stderr, "[TRACE-CM]   POP r=%d idx=%d cid=%d n=%d cut=%d "
+                            "thr=%.17g thr_bits=0x%016lx wc=%s in=%zu out=%zu\n",
+                    rec.round, rec.pop_idx, rec.cluster_id, rec.n, rec.cut,
+                    rec.threshold, (unsigned long)thr_bits, wc ? "true" : "false",
+                    rec.in_partition.size(), rec.out_partition.size());
 
             if (wc) {
                 std::vector<int> done_nodes(current_cluster_set.begin(), current_cluster_set.end());
@@ -252,6 +372,13 @@ int main(int argc, char** argv) {
                     for (auto& sc : subclusters) {
                         std::vector<int> tr;
                         for (int local : sc) tr.push_back(new_to_old[local]);
+                        // [UPSTREAM cm.h:138-148] cpp pushes EVERY translated
+                        // cluster regardless of size (no size>1 filter at this
+                        // site). Tracer probe captures per-push size for the
+                        // singleton-asymmetry resolution check (audit row I
+                        // open question).
+                        fprintf(stderr, "[TRACE-CM]       PUSH side=%s size=%zu\n",
+                                side_idx == 0 ? "in" : "out", tr.size());
                         to_be_clustered.push({tr, current_cluster_id});
                         rec.children.push_back({tr, current_cluster_id});
                     }
@@ -289,8 +416,9 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Emit JSON trace.
-    std::cout << std::setprecision(17) << "{\n  \"node_map\": [";
+    // Emit JSON trace (stdout-clean; full precision so uint64 reinterpret
+    // round-trips).
+    std::cout << std::setprecision(17) << "{\n  \"build\": \"" << k_build_mode << "\",\n  \"node_map\": [";
     {
         bool first = true;
         for (auto& [nid, orig] : new_to_orig) {
@@ -299,7 +427,8 @@ int main(int argc, char** argv) {
             std::cout << "{\"new\":" << nid << ",\"orig\":\"" << orig << "\"}";
         }
     }
-    std::cout << "],\n  \"pops\": [\n";
+    std::cout << "],\n  \"pre_log\": " << pre_log << ",\n";
+    std::cout << "  \"pops\": [\n";
     for (size_t i = 0; i < trace.size(); i++) {
         if (i) std::cout << ",\n";
         const auto& r = trace[i];

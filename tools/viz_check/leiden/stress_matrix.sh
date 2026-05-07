@@ -94,7 +94,9 @@ run_cell() {
   # Run JS self-RNG check. self_rng_check.mjs prints PASS/FAIL summary
   # to stdout AND stderr (FAIL goes to stderr_log via console.error).
   # Capture both into check_log so the parser sees them.
-  timeout 60 node "$CHECK" "$trace" "$fix_path" "$quality" "$param" "$seed" \
+  # 300s timeout: 60s was too tight for n>=15763 multi-level (8 google
+  # cells timed out at 60s but PASS at 600s; per-cell measured 30-180s).
+  timeout 300 node "$CHECK" "$trace" "$fix_path" "$quality" "$param" "$seed" \
     > "$check_log" 2>>"$stderr_log"
   # Treat absence of any summary lines as CHECK_CRASH (timeout/abort).
   if ! grep -q -E '^(canonical:|per-visit:)' "$check_log"; then

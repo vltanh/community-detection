@@ -23,6 +23,10 @@
  * Run: ./mincut_traced <metis_path> <seed>
  *****************************************************************************/
 
+#if !defined(CANONICAL_MODE) && !defined(TRACER_MODE)
+#error "must define -DCANONICAL_MODE or -DTRACER_MODE"
+#endif
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -33,6 +37,7 @@
 #include <string>
 #include <vector>
 
+#include "tools/container_swap.h"
 #include "algorithms/global_mincut/cactus/cactus_mincut.h"
 #include "algorithms/global_mincut/minimum_cut.h"
 #include "common/configuration.h"
@@ -59,6 +64,8 @@ int main(int argc, char** argv) {
     cfg->set_node_in_cut = true;
     cfg->find_lowest_conductance = false;
 
+    std::fprintf(stderr, "[TRACE-VC] PIPELINE_START build=%s seed=%zu\n",
+                 k_build_mode, cfg->seed);
     random_functions::setSeed(cfg->seed);
     GraphPtr G = graph_io::readGraphWeighted<graph_type>(cfg->graph_filename);
 

@@ -14,11 +14,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include "tools/container_swap.h"
 #include "algorithms/misc/graph_algorithms.h"
 #include "common/configuration.h"
 #include "common/definitions.h"
@@ -186,7 +185,7 @@ class contraction {
             "[TRACE-CG] vset cn:%zu Hn:%u\n", reverse_mapping.size(), H->n());
         for (size_t i = 0; i < reverse_mapping.size(); ++i) {
             if (reverse_mapping[i].size() > 1) {
-                std::unordered_set<NodeID> vtx_to_ctr;
+                TracerSet<NodeID> vtx_to_ctr;
                 for (auto v : reverse_mapping[i]) {
                     vtx_to_ctr.emplace(H->getCurrentPosition(v));
                 }
@@ -260,7 +259,7 @@ class contraction {
                                        G->number_of_edges());
 
         for (NodeID p = 0; p < reverse_mapping.size(); ++p) {
-            std::unordered_set<NodeID> edge_positions;
+            TracerSet<NodeID> edge_positions;
             contracted->new_node();
             for (NodeID node = 0; node < reverse_mapping[p].size(); ++node) {
                 NodeID n = reverse_mapping[p][node];

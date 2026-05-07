@@ -17,11 +17,11 @@
 #include <queue>
 #include <string>
 #include <tuple>
-#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
+#include "tools/container_swap.h"
 #include "algorithms/flow/push_relabel.h"
 #include "algorithms/global_mincut/cactus/all_cut_local_red.h"
 #include "algorithms/global_mincut/cactus/graph_modification.h"
@@ -327,7 +327,7 @@ class recursive_cactus {
             // and one that is not contracted,
             // use their location in contracted graphs
             // to re-find nodes as IDs swap around
-            std::unordered_set<NodeID> all_ctr;
+            TracerSet<NodeID> all_ctr;
             for (size_t i = 0; i < scc_result.size(); ++i) {
                 if (scc_result[i] != component) {
                     all_ctr.insert(i);
@@ -454,6 +454,8 @@ class recursive_cactus {
         order.emplace_back(false);
         while (i < (contract->number_of_nodes() - 1)) {
             EdgeWeight cycle_degree = 0;
+            // membership-only test (.count(tgt)); iteration-order independent;
+            // left as std::unordered_set per audit row H site #9.
             std::unordered_set<NodeID> curr_cycle;
             NodeID n = rev_node_mapping[i];
             while ((cycle_degree == 0 || cycle_degree == mincut)

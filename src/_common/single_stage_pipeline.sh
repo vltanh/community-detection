@@ -36,8 +36,12 @@
 #                       wrapper's CD_CMD already names the path itself).
 #   CD_EXTRA_LOGS       array of extra log files the wrapper's command
 #                       writes (e.g. constrained_clustering's
-#                       OUTPUT_DIR/cc.log). Driver folds each into
-#                       run.log then removes it after the stage finishes.
+#                       OUTPUT_DIR/.state/cc.log). Driver folds each into
+#                       run.log; the files themselves persist under
+#                       --keep-state (the .state/ dir is preserved) and
+#                       are wiped via the EXIT trap otherwise. Wrappers
+#                       must place these under STAGE_STATE_DIR for that
+#                       lifecycle to apply.
 #   TIMEOUT             default 3d
 #   SEED                default 0
 #   N_THREADS           default 1
@@ -192,9 +196,9 @@ mark_done "${DONE_FILE}" "${CD_STAGE_NAME}" "${EFFECTIVE_INPUTS}" "${CD_OUTPUTS}
 
 # Consolidate per-stage logs into the top-level run.log. Shell-wrapper trace
 # first, then python trace (when present), then any wrapper-declared extras
-# (e.g. constrained_clustering's cc.log / cm.log). Extra log files are
-# deleted after fold-in. .state/ persists under --keep-state (gated below)
-# and is wiped via the EXIT trap otherwise.
+# (e.g. constrained_clustering's .state/cc.log / .state/cm.log). Extras must
+# live under STAGE_STATE_DIR; .state/ persists under --keep-state (gated
+# below) and is wiped via the EXIT trap otherwise.
 append_stage_log "${LOG_FILE}" "${CD_STAGE_NAME}" "${STAGE_TIME_LOG}"
 if [ -f "${STAGE_RUN_LOG}" ]; then
     append_stage_log "${LOG_FILE}" "${CD_STAGE_NAME} (python)" "${STAGE_RUN_LOG}"
@@ -203,7 +207,6 @@ for extra_log in "${CD_EXTRA_LOGS[@]}"; do
     [ -f "${extra_log}" ] || continue
     extra_label="$(basename "${extra_log}" .log)"
     append_stage_log "${LOG_FILE}" "${CD_STAGE_NAME} (${extra_label})" "${extra_log}"
-    rm -f "${extra_log}"
 done
 
 # Under --keep-state, persist .state/ for inspection. Multi-stage wrappers

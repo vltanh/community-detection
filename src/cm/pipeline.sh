@@ -68,7 +68,7 @@ if [ ! -x "${BINARY}" ]; then
 fi
 
 CD_STAGE_NAME="cm"
-mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${OUTPUT_DIR}/.state"
 CMD=("${BINARY}" CM
      --mincut-type "${MINCUT_TYPE}"
      --connectedness-criterion "${CM_CRIT}"
@@ -77,8 +77,8 @@ CMD=("${BINARY}" CM
      --algorithm "${BASE_ALGO}"
      --num-processors "${N_THREADS}"
      --output-file "${OUTPUT_DIR}/com.csv"
-     --history-file "${OUTPUT_DIR}/history.log"
-     --log-file "${OUTPUT_DIR}/cm.log"
+     --history-file "${OUTPUT_DIR}/.state/history.log"
+     --log-file "${OUTPUT_DIR}/.state/cm.log"
      --log-level 1)
 [ -n "${BASE_RESOLUTION}" ] && CMD+=(--clustering-parameter "${BASE_RESOLUTION}")
 
@@ -91,7 +91,7 @@ CD_PARAMS=("criterion=${CM_CRIT}"
            "mincut_type=${MINCUT_TYPE}"
            "n_threads=${N_THREADS}"
            "seed=${SEED}")
-CD_EXTRA_LOGS=("${OUTPUT_DIR}/cm.log" "${OUTPUT_DIR}/history.log")
+CD_EXTRA_LOGS=("${OUTPUT_DIR}/.state/cm.log" "${OUTPUT_DIR}/.state/history.log")
 
 # shellcheck disable=SC1091
 source "${SHARED_DIR}/single_stage_pipeline.sh"

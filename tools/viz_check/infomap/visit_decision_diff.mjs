@@ -62,10 +62,11 @@ await import(path.join(WEB, "infomap/infomap_canon.js"));
 const jsVisits = [];
 let curCallIdx = -1;
 globalThis.__INFOMAP_CALL_BEGIN = function(/*n*/) { curCallIdx += 1; };
-globalThis.__INFOMAP_ONVISIT = function(v, moved, newM, L /*Li, Lm, ef, ele, xle, fle, nfle*/) {
+globalThis.__INFOMAP_ONVISIT = function(v, moved, newM, L, Li, Lm, ef, ele, xle, fle, nfle) {
   jsVisits.push({
-    ci: curCallIdx, vi: jsVisits.length, // (vi reset per-call computed at diff time)
+    ci: curCallIdx, vi: jsVisits.length,
     v: v, m: moved ? 1 : 0, n: newM, L: L,
+    Li, Lm, ef, ele, xle, fle, nfle,
     cand: [], candDE: [], candDX: [], candDL: [],
     bM: 0, bDL: 0, sM: 0, sDL: 0, sPick: 0,
     nLnk: 0, ppV: -1, ppOM: 0, ppT: 0,
@@ -129,6 +130,27 @@ console.log(`js  finalL=${res.finalL.toFixed(15)}  cpp finalL=${cpp.L_canon.toFi
 const N = Math.min(cppVisits.length, jsVisits.length);
 let firstDiv = -1;
 let divField = null;
+// Find first ΔL_after, ΔenterFlow, etc. divergence in temporal order.
+const accFields = ['L', 'ef', 'ele', 'xle', 'fle', 'nfle', 'eflnef', 'exnf', 'exfle'];
+const cppFieldKey = { L: 'L', ef: 'ef', ele: 'ele', xle: 'xle', fle: 'fle', nfle: 'nfle', eflnef: 'eflnef', exnf: 'exnf', exfle: 'exfle' };
+const jsFieldKey  = { L: 'L', ef: 'ef', ele: 'ele', xle: 'xle', fle: 'fle', nfle: 'nfle', eflnef: 'eflnef', exnf: 'exnf', exfle: 'exfle' };
+const seenFirst = {};
+for (let k = 0; k < N; k++) {
+  const c = cppVisits[k];
+  const j = jsVisits[k];
+  for (const f of accFields) {
+    if (seenFirst[f]) continue;
+    const cv = c[cppFieldKey[f]];
+    const jv = j[jsFieldKey[f]];
+    if (cv == null || jv == null) continue;
+    if (cv !== jv) {
+      seenFirst[f] = true;
+      console.log(`first Δ${f} at flat-idx=${k}: cpp=${cv} js=${jv} Δ=${(cv - jv).toExponential(3)}`);
+      console.log(`  cpp call=${c.ci} v=${c.v} m=${c.m} n=${c.n}  | js call=${j.ci} v=${j.v} m=${j.m} n=${j.n}`);
+    }
+  }
+}
+firstDiv = -1; divField = null;
 function arrEq(a, b, tol) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {

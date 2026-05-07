@@ -107,10 +107,12 @@ function canonMod() {
       const oldComm = P.memberOf(v);
       if (oldComm === newComm) return 0;
       const Gp = P.graph;
-      // JS Graph.totalWeight() = Σ weighted_degree = 2*m_cpp for
-      // undirected. Halve to recover libleidenalg's
-      // graph->total_weight() = sum of edge weights.
-      const m_orig = Gp.totalWeight() / 2;
+      // libleidenalg's graph->total_weight() = sum of edge weights
+      // (each edge once). totalEdgeWeight returns this directly.
+      // Earlier shape `Gp.totalWeight() / 2` undercounts at level 1+ by
+      // Σ_self/2 because totalWeight counts non-self twice but self
+      // once (Louvain canonical).
+      const m_orig = Gp.totalEdgeWeight();
       if (m_orig === 0) return 0;
       const directed = Gp.isDirected();
       const total_weight = m_orig * (directed ? 1.0 : 2.0);
@@ -138,7 +140,7 @@ function canonMod() {
     },
     quality(P) {
       const Gp = P.graph;
-      const m_orig = Gp.totalWeight() / 2;
+      const m_orig = Gp.totalEdgeWeight();
       if (m_orig === 0) return 0;
       const directed = Gp.isDirected();
       const m = directed ? m_orig : 2.0 * m_orig;

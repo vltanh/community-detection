@@ -4,7 +4,93 @@
 // merge_nodes_constrained) are unchanged from canonical.
 #include "Optimiser.h"
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <vector>
+
+// [TRACE-LD-LG] LEVEL_GRAPH dump — emit per-level-transition snapshot of
+// (collapsed graph + partition admin) for byte-equal cross-check vs JS.
+// Gated by env LEIDEN_DUMP_LG=1; silent otherwise so stress matrix unaffected.
+static bool _ld_lg_enabled() {
+  static int v = -1;
+  if (v < 0) {
+    const char* s = std::getenv("LEIDEN_DUMP_LG");
+    v = (s && s[0] == '1') ? 1 : 0;
+  }
+  return v != 0;
+}
+static void _ld_lg_emit_hex(double x) {
+  unsigned long long u;
+  std::memcpy(&u, &x, 8);
+  fprintf(stderr, "%016llx", u);
+}
+static void _ld_lg_dump(size_t level_idx, Graph* g, MutableVertexPartition* p) {
+  if (!_ld_lg_enabled()) return;
+  size_t K = g->vcount();
+  size_t E = g->ecount();
+  double tw = g->total_weight();
+  fprintf(stderr, "[TRACE-LD-LG] LEVEL_GRAPH level=%zu K=%zu E=%zu directed=%d csl=%d tw=",
+          level_idx, K, E, g->is_directed(), g->correct_self_loops());
+  _ld_lg_emit_hex(tw);
+  fprintf(stderr, "\n");
+  for (size_t v = 0; v < K; v++) {
+    double ns = g->node_size(v);
+    double sw = g->node_self_weight(v);
+    double so = g->strength(v, IGRAPH_OUT);
+    double si = g->strength(v, IGRAPH_IN);
+    fprintf(stderr, "[TRACE-LD-LG] VERT level=%zu v=%zu nsize=", level_idx, v);
+    _ld_lg_emit_hex(ns);
+    fprintf(stderr, " nsw=");
+    _ld_lg_emit_hex(sw);
+    fprintf(stderr, " sout=");
+    _ld_lg_emit_hex(so);
+    fprintf(stderr, " sin=");
+    _ld_lg_emit_hex(si);
+    fprintf(stderr, "\n");
+  }
+  for (size_t e = 0; e < E; e++) {
+    size_t from, to;
+    g->edge(e, from, to);
+    double w = g->edge_weight(e);
+    fprintf(stderr, "[TRACE-LD-LG] EDGE level=%zu e=%zu from=%zu to=%zu w=",
+            level_idx, e, from, to);
+    _ld_lg_emit_hex(w);
+    fprintf(stderr, "\n");
+  }
+  size_t nc = p->n_communities();
+  for (size_t c = 0; c < nc; c++) {
+    double tin = p->total_weight_in_comm(c);
+    double tfrom = p->total_weight_from_comm(c);
+    double tto = p->total_weight_to_comm(c);
+    double cs = p->csize(c);
+    size_t cn = p->cnodes(c);
+    fprintf(stderr, "[TRACE-LD-LG] COMM level=%zu c=%zu cnodes=%zu csize=",
+            level_idx, c, cn);
+    _ld_lg_emit_hex(cs);
+    fprintf(stderr, " tin=");
+    _ld_lg_emit_hex(tin);
+    fprintf(stderr, " tfrom=");
+    _ld_lg_emit_hex(tfrom);
+    fprintf(stderr, " tto=");
+    _ld_lg_emit_hex(tto);
+    fprintf(stderr, "\n");
+  }
+}
+
+// [TRACE-LD-LG] Dump partition membership only (no graph state). Used at
+// the point right before collapse_graph(sub_partition) so we can compare
+// post-refine sub-partition membership cpp vs JS.
+static void _ld_lg_dump_membership(const char* tag, size_t level_idx,
+                                   MutableVertexPartition* p) {
+  if (!_ld_lg_enabled()) return;
+  size_t n = p->get_graph()->vcount();
+  fprintf(stderr, "[TRACE-LD-LG] %s level=%zu n=%zu ncomm=%zu\n",
+          tag, level_idx, n, p->n_communities());
+  for (size_t v = 0; v < n; v++) {
+    fprintf(stderr, "[TRACE-LD-LG] %s_MEM level=%zu v=%zu c=%zu\n",
+            tag, level_idx, v, p->membership(v));
+  }
+}
 
 struct LeidenTraceMove {
     size_t pass;
@@ -172,6 +258,9 @@ double Optimiser::optimise_partition(vector<MutableVertexPartition*> partitions,
   bool aggregate_further = true;
   // As long as there remains improvement iterate
   double improv = 0.0;
+  size_t _ld_lg_level_idx = 0;     // 0 = original; +1 per level transition
+  // Level-0 dump: original graph + initial partition (singletons).
+  _ld_lg_dump(_ld_lg_level_idx, collapsed_graphs[0], collapsed_partitions[0]);
   do
   {
 
@@ -262,6 +351,11 @@ double Optimiser::optimise_partition(vector<MutableVertexPartition*> partitions,
       }
 
       // Collapse graph based on sub collapsed partition
+      // [TRACE-LD-LG] Dump sub-partition membership + main partition
+      // membership at the moment collapse_graph reads from them, so a
+      // JS-side mirror dump can be diffed pre-collapse.
+      _ld_lg_dump_membership("SUB", _ld_lg_level_idx, sub_collapsed_partitions[0]);
+      _ld_lg_dump_membership("MAIN", _ld_lg_level_idx, collapsed_partitions[0]);
       for (size_t layer = 0; layer < nb_layers; layer++)
       {
         new_collapsed_graphs[layer] = collapsed_graphs[layer]->collapse_graph(sub_collapsed_partitions[layer]);
@@ -347,6 +441,10 @@ double Optimiser::optimise_partition(vector<MutableVertexPartition*> partitions,
     // and set them to the new one.
     collapsed_partitions = new_collapsed_partitions;
     collapsed_graphs = new_collapsed_graphs;
+
+    // [TRACE-LD-LG] Per-level snapshot for byte-equal cross-check vs JS.
+    _ld_lg_level_idx++;
+    _ld_lg_dump(_ld_lg_level_idx, collapsed_graphs[0], collapsed_partitions[0]);
 
     #ifdef DEBUG
       for (size_t layer = 0; layer < nb_layers; layer++)

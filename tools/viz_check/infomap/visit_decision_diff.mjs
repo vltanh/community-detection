@@ -128,20 +128,17 @@ console.log(`js  finalL=${res.finalL.toFixed(15)}  cpp finalL=${cpp.L_canon.toFi
 
 // Walk lockstep, print first divergence.
 const N = Math.min(cppVisits.length, jsVisits.length);
-let firstDiv = -1;
-let divField = null;
 // Find first ΔL_after, ΔenterFlow, etc. divergence in temporal order.
+// cpp + js visits use the same field keys (no rename), so direct lookup.
 const accFields = ['L', 'ef', 'ele', 'xle', 'fle', 'nfle', 'eflnef', 'exnf', 'exfle'];
-const cppFieldKey = { L: 'L', ef: 'ef', ele: 'ele', xle: 'xle', fle: 'fle', nfle: 'nfle', eflnef: 'eflnef', exnf: 'exnf', exfle: 'exfle' };
-const jsFieldKey  = { L: 'L', ef: 'ef', ele: 'ele', xle: 'xle', fle: 'fle', nfle: 'nfle', eflnef: 'eflnef', exnf: 'exnf', exfle: 'exfle' };
 const seenFirst = {};
 for (let k = 0; k < N; k++) {
   const c = cppVisits[k];
   const j = jsVisits[k];
   for (const f of accFields) {
     if (seenFirst[f]) continue;
-    const cv = c[cppFieldKey[f]];
-    const jv = j[jsFieldKey[f]];
+    const cv = c[f];
+    const jv = j[f];
     if (cv == null || jv == null) continue;
     if (cv !== jv) {
       seenFirst[f] = true;
@@ -150,7 +147,7 @@ for (let k = 0; k < N; k++) {
     }
   }
 }
-firstDiv = -1; divField = null;
+let firstDiv = -1, divField = null;
 function arrEq(a, b, tol) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {

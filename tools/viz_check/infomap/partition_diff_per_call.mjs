@@ -86,7 +86,7 @@ for (let k = 0; k < N; k++) {
   const j = jsDumps[k];
   if (!c.partition_end || c.partition_end.length === 0) continue;
   // Compare nMoved + size first.
-  if ((c.nMoved | 0) !== (j.nMoved | 0)) {
+  if (c.nMoved !== j.nMoved) {
     console.log(`call ${k}: nMoved cpp=${c.nMoved} js=${j.nMoved} (lvl=${c.l} fl=${c.fl})`);
     if (firstCall < 0) { firstCall = k; firstField = "nMoved"; firstIdx = -1; cppV = c.nMoved; jsV = j.nMoved; }
   }

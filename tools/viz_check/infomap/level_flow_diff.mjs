@@ -88,7 +88,6 @@ console.log(`comparing ${N} levels (cpp=${cppLevels.length} js=${jsLevels.length
 
 let firstLvl = -1, firstField = null, firstIdx = -1;
 let cppV = 0, jsV = 0;
-const sumLen = (a) => a.reduce((x, y) => x + y, 0);
 let cumPerLevelOk = 0;
 for (let l = 0; l < N; l++) {
   const c = cppLevels[l];

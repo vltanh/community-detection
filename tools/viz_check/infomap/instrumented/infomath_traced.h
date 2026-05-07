@@ -1,20 +1,34 @@
-/* Forked infomath.h. Currently a verbatim copy of the canonical
- * header — the One-Definition-Rule mechanism is in place so any
- * future override of plogp lands in our build first (the canonical
- * header re-include inside MapEquation.h / InfomapOptimizer.h is
- * a no-op once INFOMATH_H_ is defined here).
+/* Forked infomath.h with compile-time mode toggle (skill §"Compile-time
+ * tracer-mode toggle"). One source, two build paths:
  *
- * Empirical findings:
- *   - Switching plogp to `p * (log(p) * LOG2E)` widens the ULP gap
- *     between V8 and glibc rather than closing it; correctly-rounded
- *     log2 (which both libraries provide on x86_64 Linux) is the
- *     bit-tightest form.
- *   - The residual 1.78e-15 dnc drift is not log2-attributable; it
- *     comes from running-accumulator ULP noise over the ~4500-visit
- *     trajectory, not from the leaf-level transcendental.
+ *   -DCANONICAL_MODE -> plogp routes through std::log2; build produces
+ *                       a tracer that should be bit-equal to the
+ *                       unmodified canonical Infomap pipeline (build-pair
+ *                       equivalence test (a) of the byte-equal-tracer skill).
+ *   -DTRACER_MODE    -> plogp routes through jsmath::jsLog2 (fdlibm
+ *                       __ieee754_log * Math.LOG2E, bit-equal V8 Math.log).
+ *                       This is the binary the JS production walker
+ *                       cross-checks against (verification target).
+ *
+ * Header-guarded via INFOMATH_H_ so any subsequent canonical
+ * infomath.h include from MapEquation.h / InfomapOptimizer.h is a
+ * no-op; both modes resolve plogp through this overlay.
+ *
+ * Empirical findings (TRACER_MODE only):
+ *   - `p * (log(p) * LOG2E)` widens the ULP gap between V8 and glibc
+ *     compared to correctly-rounded log2; jsLog (fdlibm e_log.c) *
+ *     LOG2E with the log2(1)=0 special case is the bit-tightest form
+ *     verified at tools/viz_check/infomap/L2_log2/.
  */
 #ifndef INFOMATH_H_
 #define INFOMATH_H_
+
+#if !defined(CANONICAL_MODE) && !defined(TRACER_MODE)
+#error "infomath_traced.h: compile with -DCANONICAL_MODE or -DTRACER_MODE"
+#endif
+#if defined(CANONICAL_MODE) && defined(TRACER_MODE)
+#error "infomath_traced.h: -DCANONICAL_MODE and -DTRACER_MODE are mutually exclusive"
+#endif
 
 #include <cmath>
 #include <cstdlib>
@@ -25,13 +39,14 @@ namespace infomath {
 
   using std::log2;
 
-  // plogp routes through jsLog2 (fdlibm-derived, bit-equal V8 Math.log * LOG2E)
-  // instead of std::log2. The std::log2 / Math.log2 path drifts by 1 ulp on
-  // ~1 in 1e5 inputs (verified at tools/viz_check/infomap/L2_log2/). Closes
-  // audit row D for the kernel hot path.
+  // plogp picks log2 backend at compile time; see header comment.
   inline double plogp(double p)
   {
+#ifdef TRACER_MODE
     return p > 0.0 ? p * jsmath::jsLog2(p) : 0.0;
+#else
+    return p > 0.0 ? p * std::log2(p) : 0.0;
+#endif
   }
 
   inline double isEqual(double a, double b, double tol = 1e-8)

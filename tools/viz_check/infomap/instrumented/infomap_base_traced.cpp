@@ -201,6 +201,14 @@ struct InfomapTraceCall {
   // call where rng_peek diverges localises L4 self-RNG divergence to a
   // sub-Infomap RNG-stream offset.
   std::vector<unsigned int> rng_peek;
+  // [TRACE-IM] Post-sweep partition snapshot: m_activeNetwork[i]->index
+  // at end of tryMoveEachNodeIntoBestModule, plus nMoved + final
+  // codelength. Mirrors JS __INFOMAP_PARTITION_DUMP. partition_diff
+  // _per_call.mjs uses these to localise first sweep where moduleOf
+  // diverges between cpp + JS.
+  std::vector<unsigned int> partition_end;
+  unsigned int n_moved = 0;
+  double L_post = 0.0;
 };
 
 // [TRACE-IM] coarseTune sub-Infomap probe. Per top-module pass through
@@ -386,6 +394,20 @@ void traceCallBegin(InfomapBase& /*base*/,
   call.visit_order = visitOrder;
   call.rng_peek = rng_peek;
   g_infomap_trace.calls.push_back(std::move(call));
+}
+
+void tracePartitionEnd(InfomapBase& base,
+                       const std::vector<InfoNode*>& network,
+                       unsigned int numMoved)
+{
+  if (g_infomap_trace.calls.empty()) return;
+  auto& call = g_infomap_trace.calls.back();
+  call.n_moved = numMoved;
+  call.L_post = base.getCodelength();
+  call.partition_end.reserve(network.size());
+  for (auto* n : network) {
+    call.partition_end.push_back(n ? n->index : 0);
+  }
 }
 
 void traceVisitAfter(InfomapBase& base,

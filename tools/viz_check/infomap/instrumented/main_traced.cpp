@@ -103,6 +103,9 @@ struct InfomapTraceCall {
     std::vector<unsigned int> visit_order;
     std::vector<InfomapTraceVisit> visits;
     std::vector<unsigned int> rng_peek;
+    std::vector<unsigned int> partition_end;
+    unsigned int n_moved = 0;
+    double L_post = 0.0;
 };
 struct InfomapTraceCoarseSub {
     unsigned int top_idx = 0;
@@ -468,6 +471,10 @@ int main(int argc, char** argv) {
                       << ",\"ppOM\":" << v.pairPullOldM
                       << ",\"ppT\":" << (v.pairPullTriggered ? 1 : 0) << "}";
         }
+        std::cout << "],\"nMoved\":" << c.n_moved
+                  << ",\"L_post\":" << c.L_post
+                  << ",\"partition_end\":[";
+        emit_uint_array(c.partition_end);
         std::cout << "]}";
     }
     std::cout << "\n  ],\n";

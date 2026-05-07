@@ -95,6 +95,11 @@ extern void traceVisitDecision(unsigned int v,
 // [TRACE-IM] Lookup helper: stable active-id for an InfoNode at the
 // current level (-1 if not in level table).
 extern int lookupLevelActiveId(InfoNode* node);
+// [TRACE-IM] Per-call partition end snapshot: m_activeNetwork[i]->index
+// for i in 0..numNodes-1 plus nMoved + post-sweep codelength.
+extern void tracePartitionEnd(InfomapBase& base,
+                               const std::vector<InfoNode*>& network,
+                               unsigned int numMoved);
 }
 
 namespace infomap {
@@ -708,6 +713,13 @@ unsigned int InfomapOptimizer<Objective>::tryMoveEachNodeIntoBestModule()
                          /*pairPullTriggered*/false);
     }
   }
+
+  // [TRACE-IM] dump per-position module-of (m_activeNetwork[i]->index) at
+  // end of sweep. JS mirrors via __INFOMAP_PARTITION_DUMP. Used by
+  // partition_diff_per_call.mjs to localise first sweep where post-sweep
+  // moduleOf diverges -- catches ID-relabel drift even when every per-visit
+  // decision recorded matches.
+  tracePartitionEnd(*m_infomap, network, numMoved);
 
   return numMoved;
 }

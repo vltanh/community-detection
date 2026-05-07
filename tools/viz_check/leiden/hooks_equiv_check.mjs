@@ -71,7 +71,8 @@ function canonCPM(resolution) {
       for (let c = 0; c < P.ncomm(); c++) {
         if (P.cnodes(c) === 0) continue;
         const nc = P.csize(c);
-        const w = P.totalWeightInComm(c) / 2;
+        // LeidenPartition: totalWeightInComm = intra_c directly.
+        const w = P.totalWeightInComm(c);
         const possible = csl ? (nc * nc) : (nc * (nc - 1));
         mod += w - resolution * possible / 2;
       }

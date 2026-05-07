@@ -88,9 +88,9 @@ function canonCPM(resolution) {
       for (let c = 0; c < P.ncomm(); c++) {
         if (P.cnodes(c) === 0) continue;
         const nc = P.csize(c);
-        // totalWeightInComm stores 2*intra_c (canonical Modularity
-        // convention in louvain.js); halve to recover intra_c.
-        const w = P.totalWeightInComm(c) / 2;
+        // 2026-05-07: P is LeidenPartition; totalWeightInComm IS
+        // intra_c (libleidenalg convention). No /2 bridge.
+        const w = P.totalWeightInComm(c);
         const possible = csl ? (nc * nc) : (nc * (nc - 1));
         mod += w - resolution * possible / 2;
       }
@@ -118,8 +118,11 @@ function canonMod() {
       const w_from_old = P.weightFromComm(v, oldComm);
       const w_to_new = P.weightToComm(v, newComm);
       const w_from_new = P.weightFromComm(v, newComm);
-      const k_out = Gp.strength(v);
-      const k_in = directed ? Gp.strength(v) : k_out;
+      // libleidenalg uses igraph's strength under default IGRAPH_LOOPS_
+      // TWICE: self-loops counted twice for undirected. Use Graph.
+      // strengthLeiden which returns wDeg + nbSelfLoops (= cpp strength).
+      const k_out = Gp.strengthLeiden(v);
+      const k_in = directed ? Gp.strengthLeiden(v) : k_out;
       const sw = Gp.nodeSelfWeight(v);
       const K_out_old = P.totalWeightFromComm(oldComm);
       const K_in_old  = P.totalWeightToComm(oldComm);
@@ -141,9 +144,9 @@ function canonMod() {
       const m = directed ? m_orig : 2.0 * m_orig;
       let mod = 0;
       for (let c = 0; c < P.ncomm(); c++) {
-        // totalWeightInComm stores 2*intra_c (canonical Modularity
-        // convention in louvain.js); halve to recover intra_c.
-        const w = P.totalWeightInComm(c) / 2;
+        // 2026-05-07: P is LeidenPartition; totalWeightInComm IS
+        // intra_c directly (libleidenalg convention). No /2 bridge.
+        const w = P.totalWeightInComm(c);
         const w_out = P.totalWeightFromComm(c);
         const w_in = P.totalWeightToComm(c);
         mod += w - w_out * w_in / ((directed ? 1.0 : 4.0) * m_orig);
@@ -160,14 +163,12 @@ else if (quality === "mod") qfn = canonMod();
 else { console.error("unknown quality"); process.exit(2); }
 
 // Run JS optimisePartition with recordTrace; this builds JS's own
-// trace mirroring cpp's pass-by-pass shape. maxOuterLevels=1 caps to
-// one outer iter (one move-pass + one refine-pass at level 0) since
-// inner-level admin algebra mismatch (audit row M) makes JS visit-cap
-// pathologically loop on collapsed graphs and is the deferred gap.
-// Top-level byte-equal is the user-facing pedagogical contract.
+// trace mirroring cpp's pass-by-pass shape. 2026-05-07: LeidenPartition
+// (libleidenalg-shape admin) replaces LV.Partition for Leiden code
+// paths, so inner-level moveNodes converges identically to cpp; full
+// multi-level loop runs without the maxOuterLevels=1 cap.
 const out = COMDET.LEIDEN.optimisePartition(G, qfn, seed >>> 0, {
   recordTrace: true,
-  maxOuterLevels: 1,
 });
 
 // Flatten JS levels into pass list parallel to cpp's. Each JS level
@@ -181,16 +182,12 @@ for (let li = 0; li < out.levels.length; li++) {
   }
 }
 
-// TOP-LEVEL byte-equal closure: filter both sides to passes whose
-// operating graph has vcount == n. Inner-level passes operate on
-// collapsed super-graphs that depend on collapse edge-weight
-// aggregation order; verifying those requires cpp to expose its
-// collapsed-graph adjacency (deferred — top-level byte-equal is the
-// user-facing pedagogical contract for the browser walker).
-const cppTop = cpp.passes.filter(function (p) {
-  return p.post_membership && p.post_membership.length === n;
-});
-const jsTop = jsPasses.filter(function (p) { return p.level === n; });
+// 2026-05-07: COMDET.LEIDEN.Partition (LeidenPartition) ports
+// libleidenalg's admin algebra so inner-level moveNodes/refine should
+// be bit-equal to cpp at every level. Compare ALL passes pass-by-pass
+// (cpp passes are emitted in the same level-traversal order JS produces).
+const cppTop = cpp.passes.filter(function (p) { return !!p.moves; });
+const jsTop  = jsPasses;
 
 const _bbuf = new Float64Array(1);
 const _bview = new BigUint64Array(_bbuf.buffer);

@@ -91,16 +91,15 @@ run_cell() {
     return
   fi
 
-  # Run JS self-RNG check (top-level only, maxOuterLevels=1).
-  if ! timeout 30 node "$CHECK" "$trace" "$fix_path" "$quality" "$param" "$seed" \
-       > "$check_log" 2>>"$stderr_log"; then
-    # PASS-fail status decided by parser below; only log the timeout/crash.
-    if grep -q "FAIL: self-RNG" "$check_log"; then
-      :
-    elif ! grep -q "JS production walker bit-equal" "$check_log"; then
-      echo "${name},${n_hint},${seed},${quality},${param},,,,,,,,,,,,,CHECK_CRASH" >> "$OUT/cells.csv"
-      return
-    fi
+  # Run JS self-RNG check. self_rng_check.mjs prints PASS/FAIL summary
+  # to stdout AND stderr (FAIL goes to stderr_log via console.error).
+  # Capture both into check_log so the parser sees them.
+  timeout 60 node "$CHECK" "$trace" "$fix_path" "$quality" "$param" "$seed" \
+    > "$check_log" 2>>"$stderr_log"
+  # Treat absence of any summary lines as CHECK_CRASH (timeout/abort).
+  if ! grep -q -E '^(canonical:|per-visit:)' "$check_log"; then
+    echo "${name},${n_hint},${seed},${quality},${param},,,,,,,,,,,,,CHECK_CRASH" >> "$OUT/cells.csv"
+    return
   fi
 
   # Parse counters out of the check log.
@@ -109,7 +108,8 @@ run_cell() {
   js_line=$(grep -m1 '^js:' "$check_log")
   per_v_line=$(grep -m1 '^per-visit:' "$check_log")
   q_line=$(grep -m1 '^Q_canon=' "$check_log")
-  status_line=$(grep -m1 -E '^(PASS|FAIL):' "$check_log")
+  # PASS lands on stdout; FAIL on stderr. Check both.
+  status_line=$(grep -m1 -E '^(PASS|FAIL):' "$check_log" "$stderr_log" 2>/dev/null | head -1 | sed 's/^[^:]*://')
 
   local cpp_passes cpp_visits js_passes js_visits
   cpp_passes=$(awk '{for(i=1;i<=NF;i++) if($i ~ /^passes=/) {split($i,a,"="); print a[2]; exit}}' <<<"$cpp_line")

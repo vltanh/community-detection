@@ -98,12 +98,9 @@ function canonCPM(resolution) {
       for (let c = 0; c < P.ncomm(); c++) {
         if (P.cnodes(c) === 0) continue;
         const nc = P.csize(c);
-        // Post-2026-05-05 louvain.js Partition.totalWeightInComm
-        // uses canonical Modularity inC = 2*intra_c convention
-        // (Modularity::in[c] = 2·intra_c + Σ self-loops, line 21+364
-        // of louvain.js). Halve it to recover libleidenalg's
-        // _total_weight_in_comm[c] = intra_c convention.
-        const w = P.totalWeightInComm(c) / 2;
+        // 2026-05-07: P is LeidenPartition (libleidenalg-shape), so
+        // totalWeightInComm IS intra_c directly. No /2 bridge needed.
+        const w = P.totalWeightInComm(c);
         const possible = csl ? (nc * nc) : (nc * (nc - 1));
         mod += w - resolution * possible / 2;     // intra_c - res*nc*(nc-1)/2
       }
@@ -138,8 +135,10 @@ function canonMod() {
       const w_from_old = P.weightFromComm(v, oldComm);
       const w_to_new = P.weightToComm(v, newComm);
       const w_from_new = P.weightFromComm(v, newComm);
-      const k_out = G.strength(v);
-      const k_in = directed ? G.strength(v) : k_out;   // undirected ALL = OUT
+      // libleidenalg uses igraph strength with IGRAPH_LOOPS_TWICE for
+      // undirected. JS strengthLeiden = wDeg + nbSelfLoops (loops twice).
+      const k_out = G.strengthLeiden(v);
+      const k_in = directed ? G.strengthLeiden(v) : k_out;
       const sw = G.nodeSelfWeight(v);
       const K_out_old = P.totalWeightFromComm(oldComm);
       const K_in_old  = P.totalWeightToComm(oldComm);
@@ -162,10 +161,9 @@ function canonMod() {
       const m = directed ? m_orig : 2.0 * m_orig;
       let mod = 0;
       for (let c = 0; c < P.ncomm(); c++) {
-        // totalWeightInComm now stores 2*intra_c (canonical Modularity
-        // convention adopted in louvain.js post 2026-05-05). Halve to
-        // recover libleidenalg _total_weight_in_comm = intra_c.
-        const w = P.totalWeightInComm(c) / 2;
+        // 2026-05-07: P is LeidenPartition; totalWeightInComm IS
+        // intra_c directly. No /2 bridge needed.
+        const w = P.totalWeightInComm(c);
         const w_out = P.totalWeightFromComm(c);
         const w_in = P.totalWeightToComm(c);
         mod += w - w_out * w_in / ((directed ? 1.0 : 4.0) * m_orig);
@@ -182,7 +180,11 @@ else if (quality === "mod") qfn = canonMod();
 else { console.error("unknown quality"); process.exit(2); }
 
 // Singleton init (matches libleidenalg's CPMVertexPartition default).
-const P = COMDET.LOUVAIN.Partition(G, null, qfn);
+// 2026-05-07: switched to COMDET.LEIDEN.Partition (LeidenPartition,
+// libleidenalg-shape admin) so per-move dQ is bit-equal to cpp at all
+// levels. Previously used LV.Partition with /2 bridges in canonCPM/Mod;
+// that worked at level 0 only.
+const P = COMDET.LEIDEN.Partition(G, null, qfn);
 const Q_init_js = qfn.quality(P);
 
 // libleidenalg's rank_order_communities (MutableVertexPartition.cpp:370-417

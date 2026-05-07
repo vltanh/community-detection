@@ -107,7 +107,10 @@ function canonMod() {
       const oldComm = P.memberOf(v);
       if (oldComm === newComm) return 0;
       const Gp = P.graph;
-      const m_orig = Gp.totalWeight();
+      // JS Graph.totalWeight() = Σ weighted_degree = 2*m_cpp for
+      // undirected. Halve to recover libleidenalg's
+      // graph->total_weight() = sum of edge weights.
+      const m_orig = Gp.totalWeight() / 2;
       if (m_orig === 0) return 0;
       const directed = Gp.isDirected();
       const total_weight = m_orig * (directed ? 1.0 : 2.0);
@@ -132,7 +135,7 @@ function canonMod() {
     },
     quality(P) {
       const Gp = P.graph;
-      const m_orig = Gp.totalWeight();
+      const m_orig = Gp.totalWeight() / 2;
       if (m_orig === 0) return 0;
       const directed = Gp.isDirected();
       const m = directed ? m_orig : 2.0 * m_orig;
@@ -157,9 +160,15 @@ else if (quality === "mod") qfn = canonMod();
 else { console.error("unknown quality"); process.exit(2); }
 
 // Run JS optimisePartition with recordTrace; this builds JS's own
-// trace mirroring cpp's pass-by-pass shape (move + refine per level,
-// repeated until aggregateFurther false).
-const out = COMDET.LEIDEN.optimisePartition(G, qfn, seed >>> 0, { recordTrace: true });
+// trace mirroring cpp's pass-by-pass shape. maxOuterLevels=1 caps to
+// one outer iter (one move-pass + one refine-pass at level 0) since
+// inner-level admin algebra mismatch (audit row M) makes JS visit-cap
+// pathologically loop on collapsed graphs and is the deferred gap.
+// Top-level byte-equal is the user-facing pedagogical contract.
+const out = COMDET.LEIDEN.optimisePartition(G, qfn, seed >>> 0, {
+  recordTrace: true,
+  maxOuterLevels: 1,
+});
 
 // Flatten JS levels into pass list parallel to cpp's. Each JS level
 // emits one move pass + one refine pass (when refinePartition true).

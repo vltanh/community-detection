@@ -126,7 +126,11 @@ function canonMod() {
       const oldComm = P.memberOf(v);
       if (oldComm === newComm) return 0;
       const G = P.graph;
-      const m_orig = G.totalWeight();
+      // JS Graph.totalWeight() = Σ weighted_degree = 2*m_cpp for
+      // undirected (where m_cpp = libleidenalg Graph::total_weight()
+      // = sum of edge weights). Halve to recover m_cpp so cpp's
+      // total_weight = m_cpp*(2-directed) reproduces bit-equal.
+      const m_orig = G.totalWeight() / 2;
       if (m_orig === 0) return 0;
       const directed = G.isDirected();
       const total_weight = m_orig * (directed ? 1.0 : 2.0);
@@ -151,7 +155,8 @@ function canonMod() {
     },
     quality(P) {
       const G = P.graph;
-      const m_orig = G.totalWeight();
+      // m_orig = m_cpp; see diffMove note.
+      const m_orig = G.totalWeight() / 2;
       if (m_orig === 0) return 0;
       const directed = G.isDirected();
       const m = directed ? m_orig : 2.0 * m_orig;

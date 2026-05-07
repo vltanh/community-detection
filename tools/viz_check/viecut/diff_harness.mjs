@@ -41,7 +41,7 @@ function parseRngTrace(stderr) {
     const kind = m[1];
     const rest = m[2];
     if (kind === "setSeed") {
-      const v = rest.match(/seed:(\d+)/);
+      const v = rest.match(/val:(\d+)/);
       queue.push({ kind: "setSeed", seed: v ? (parseInt(v[1], 10) >>> 0) : 0 });
     } else if (kind === "next") {
       const v = rest.match(/val:0x([0-9a-fA-F]+)/);

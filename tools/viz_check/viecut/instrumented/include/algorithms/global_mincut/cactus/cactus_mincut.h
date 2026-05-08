@@ -172,11 +172,35 @@ class cactus_mincut : public minimum_cut {
                     graphs, mincut);
             }
 
+            // PROBE: dump n=12 graph adjacency before pr34 iter:3 (and others).
+            {
+                auto Gp = graphs.back();
+                std::fprintf(stderr, "[TRACE-CM] pr34_input iter:%d n:%u m:%lld\n",
+                    loop_iter, Gp->n(), (long long)Gp->m());
+                for (NodeID v : Gp->nodes()) {
+                    std::fprintf(stderr, "[TRACE-CM]  pr34_adj[%u] deg:%lu wdeg:%lu",
+                        v, (unsigned long)Gp->getUnweightedNodeDegree(v),
+                        (unsigned long)Gp->getWeightedNodeDegree(v));
+                    for (EdgeID e : Gp->edges_of(v)) {
+                        auto [t, w] = Gp->getEdge(v, e);
+                        std::fprintf(stderr, " (%u,%lu)", t, (unsigned long)w);
+                    }
+                    std::fprintf(stderr, "\n");
+                }
+            }
             union_find uf34 = tests::prTests34(
                 graphs.back(), mincut + 1, true);
             std::fprintf(stderr,
                 "[TRACE-CM] pr34 iter:%d before_n:%u uf_n:%u\n",
                 loop_iter, graphs.back()->n(), uf34.n());
+            for (NodeID i = 0; i < uf34.n(); i++) {}
+            {
+                std::fprintf(stderr, "[TRACE-CM] pr34_uf iter:%d members", loop_iter);
+                for (NodeID v = 0; v < graphs.back()->n(); v++) {
+                    std::fprintf(stderr, " %u->%u", v, uf34.Find(v));
+                }
+                std::fprintf(stderr, "\n");
+            }
             if (uf34.n() < graphs.back()->number_of_nodes()) {
                 auto g34 = contraction::fromUnionFind(
                     graphs.back(), &uf34, true);

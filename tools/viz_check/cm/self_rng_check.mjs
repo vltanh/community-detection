@@ -44,11 +44,16 @@ await import(path.join(WEB, "louvain/louvain.js"));
 await import(path.join(WEB, "leiden/leiden.js"));
 await import(path.join(WEB, "comdet/page_helpers.js"));
 await import(path.join(WEB, "wcc/wcc.js"));
-// Load VieCut JS port if available so cm.js's mincutFn defaults to viecut.
-// VieCut module loader pattern lives at viz_check/viecut/_loader.mjs.
+// Load VieCut JS port + register MINCUT.viecut adapter so cm.js's
+// mincutFn defaults to viecut. The loader must be CALLED, not just
+// imported, to populate COMDET.VIECUT before mincut_adapter.js runs.
 try {
   const vcLoader = path.join(__dirname, "../viecut/_loader.mjs");
-  if (fs.existsSync(vcLoader)) await import(vcLoader);
+  if (fs.existsSync(vcLoader)) {
+    const mod = await import(vcLoader);
+    mod.loadVIECUT();
+    await import(path.join(WEB, "viecut/mincut_adapter.js"));
+  }
 } catch (e) { /* fallback to stoer-wagner */ }
 await import(path.join(WEB, "cm/cm.js"));
 

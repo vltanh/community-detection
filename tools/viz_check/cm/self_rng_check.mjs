@@ -95,6 +95,14 @@ function bits(x) {
 const G = loadGraph(edgePath, comPath);
 const fixture = { nodes: G.nodes, edges: G.edges, gt: Array.from(G.membership) };
 
+// Seed JS-side VieCut RNG to match cpp tracer's startup setSeed
+// (kernel_check.cpp:286 calls random_functions::setSeed(seed) at startup,
+// then chained mincut calls leave m_mt persistent — JS mirrors via
+// adapter setSeed exposure + cm.js's mincutFn(...) without seed).
+if (COMDET.MINCUT && COMDET.MINCUT.viecut && COMDET.MINCUT.viecut.setSeed) {
+  COMDET.MINCUT.viecut.setSeed(parseInt(seed, 10) >>> 0);
+}
+
 // L4: NO cutOracle, NO baseAlgoFn. JS runs own chain.
 const r = COMDET.CM.runCM(G.membership, {
   fixture,

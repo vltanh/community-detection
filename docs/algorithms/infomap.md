@@ -2,6 +2,8 @@
 
 [← back to index](../algorithms.md)
 
+Companion to [`comdet/infomap.html`](https://vltanh.me/comdet/infomap.html).
+
 Map equation on random walks. Rosvall + Bergstrom 2008
 ([doi:10.1073/pnas.0706851105](https://doi.org/10.1073/pnas.0706851105),
 PNAS 105(4):1118-1123). Reference implementation: the

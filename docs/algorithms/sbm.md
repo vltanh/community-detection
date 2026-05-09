@@ -2,6 +2,10 @@
 
 [← back to index](../algorithms.md)
 
+Companion to the seven gallery pages, entry point
+[`comdet/sbm-flat-best.html`](https://vltanh.me/comdet/sbm-flat-best.html)
+(plus `sbm-flat-{dc,ndc,pp}` and `sbm-nested-{best,dc,ndc}`).
+
 Bayesian inference of a flat or nested stochastic block model. Seven
 gallery pages share one JS kernel: five per-variant walkers
 (`sbm-flat-{dc,ndc,pp}`, `sbm-nested-{dc,ndc}`) plus two meta

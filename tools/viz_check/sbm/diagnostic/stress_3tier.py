@@ -32,7 +32,8 @@ from pathlib import Path
 CD = Path(__file__).resolve().parents[4]            # community-detection/
 REPO = CD.parent                                     # netsci-research/
 NETS = REPO / "data" / "empirical_networks" / "networks"
-KERNEL_CHECK = CD / "tools" / "viz_check" / "sbm" / "kernel_check.py"
+TRACER = "/tmp/sbm_flat_kernel_check"
+SELF_RNG_CHECK = CD / "tools" / "viz_check" / "sbm" / "self_rng_check.mjs"
 
 TIERS = {
     "T1": [
@@ -89,19 +90,27 @@ def synth_init(edge_path: Path, seed: int, K: int) -> Path:
 
 def run_cell(name: str, edge: Path, com: Path, mode: str, seed: int,
              sweeps: int, verbose: bool = False) -> tuple[bool, int, str]:
-    """Returns (pass, visits, last_line_of_output)."""
-    cmd = [
-        sys.executable, str(KERNEL_CHECK),
-        "--mode", mode,
-        "--seed", str(seed),
-        "--sweeps", str(sweeps),
-        "--no-canonical-check",
-        "--graph", f"{name}:{edge}:{com}",
-    ]
-    rc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-    out = rc.stdout + rc.stderr
-    passed = "OVERALL: PASS" in out
-    # Parse visits from "n=N sweeps=K visits=V" line in JS replay output.
+    """Two legs:
+      1. cpp tracer emits trace JSON to /tmp/sbm_stress_trace.json.
+      2. self_rng_check.mjs compares JS standalone vs cpp via raw bit
+         equality (BigUint64Array reinterpret) — TRUE byte-equal.
+    Returns (pass, visits, last_line_of_output).
+    """
+    trace_path = f"/tmp/sbm_stress_{name}_{seed}_{mode}_trace.json"
+    with open(trace_path, "w") as fout:
+        rc1 = subprocess.run(
+            [TRACER, f"--mode={mode}", f"--edge={edge}", f"--init={com}",
+             f"--seed={seed}", f"--sweeps={sweeps}"],
+            stdout=fout, stderr=subprocess.PIPE, text=True, timeout=900,
+        )
+    if rc1.returncode != 0:
+        return False, 0, f"cpp tracer failed: {rc1.stderr.strip()[:200]}"
+    rc2 = subprocess.run(
+        ["node", str(SELF_RNG_CHECK), trace_path, str(edge), mode],
+        capture_output=True, text=True, timeout=900,
+    )
+    out = rc2.stdout + rc2.stderr
+    passed = (rc2.returncode == 0)
     visits = 0
     for line in out.splitlines():
         if "visits=" in line:

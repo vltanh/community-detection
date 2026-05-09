@@ -80,7 +80,11 @@ if (n !== cpp.n) {
 }
 
 const Q = COMDET.LOUVAIN.Modularity();
-const G = COMDET.LOUVAIN.Graph(n, edges, { correctSelfLoops: false });
+// sortAdj:true mirrors externals/louvain post-convert + post-clean adj
+// layout: each node's adj sorted by target-id ASC. Required for byte-
+// equal vs the canonical-faithful tracer (tracer always sorts adj at
+// level 0 + emits per-direction-ONCE adj at level 1+ via Graph.collapse).
+const G = COMDET.LOUVAIN.Graph(n, edges, { correctSelfLoops: false, sortAdj: true });
 const out = COMDET.LOUVAIN.run(G, Q, cpp.seed, { recordTrace: true });
 
 // Walk levels: cpp.levels[L].visits is flat across passes; JS
@@ -118,28 +122,69 @@ for (let L = 0; L < Lmin; L++) {
       totalVisits++;
       const jsDeltaBits = bitsHex(jv.moved ? jv.delta : 0);
       const jsGainBits  = bitsHex(jv.moved ? (jv.deltaGain != null ? jv.deltaGain : jv.delta * (cpp.m2 || 1)) : 0);
-      const ok =
-        jv.v === cv.v &&
-        jv.fromComm === cv.fromComm &&
-        jv.toComm === cv.toComm &&
-        (!!jv.moved) === (!!cv.moved) &&
-        jsDeltaBits === cv.dSbits &&
-        (cv.dGainBits == null || jsGainBits === cv.dGainBits) &&
-        cv.pass === P &&
-        cv.visit === V;
-      if (!ok) {
+      const jsInCfromBits  = bitsHex(jv.inCfrom);
+      const jsInCtoBits    = bitsHex(jv.inCto);
+      const jsTotCfromBits = bitsHex(jv.totCfrom);
+      const jsTotCtoBits   = bitsHex(jv.totCto);
+      const checks = [
+        ["v",         jv.v === cv.v,           jv.v, cv.v],
+        ["fromComm",  jv.fromComm === cv.fromComm, jv.fromComm, cv.fromComm],
+        ["toComm",    jv.toComm === cv.toComm, jv.toComm, cv.toComm],
+        ["moved",     (!!jv.moved) === (!!cv.moved), jv.moved, cv.moved],
+        ["dSbits",    jsDeltaBits === cv.dSbits, jsDeltaBits, cv.dSbits],
+        ["dGainBits", cv.dGainBits == null || jsGainBits === cv.dGainBits, jsGainBits, cv.dGainBits],
+        ["pass",      cv.pass === P, P, cv.pass],
+        ["visit",     cv.visit === V, V, cv.visit],
+        ["inCfrom",   cv.inCfromBits == null || jsInCfromBits === cv.inCfromBits, jsInCfromBits, cv.inCfromBits],
+        ["inCto",     cv.inCtoBits == null || jsInCtoBits === cv.inCtoBits, jsInCtoBits, cv.inCtoBits],
+        ["totCfrom",  cv.totCfromBits == null || jsTotCfromBits === cv.totCfromBits, jsTotCfromBits, cv.totCfromBits],
+        ["totCto",    cv.totCtoBits == null || jsTotCtoBits === cv.totCtoBits, jsTotCtoBits, cv.totCtoBits],
+      ];
+      for (const [field, ok, jsVal, cpVal] of checks) {
+        if (ok) continue;
         fail++;
         if (examples.length < 10) {
-          examples.push(
-            `L${L}/P${P}/V${V}: js={v:${jv.v},from:${jv.fromComm},to:${jv.toComm},moved:${jv.moved},dS:${jsDeltaBits}} `
-            + `cpp={pass:${cv.pass},visit:${cv.visit},v:${cv.v},from:${cv.fromComm},to:${cv.toComm},moved:${cv.moved},dS:${cv.dSbits}}`);
+          examples.push(`L${L}/P${P}/V${V} [${field}]: js=${jsVal} cpp=${cpVal} (v=${jv.v} from=${jv.fromComm} to=${jv.toComm})`);
         }
+        break;
       }
     }
   }
   if (cpIdx !== cpLv.visits.length) {
     fail++;
     examples.push(`L${L}: cpp has ${cpLv.visits.length} visits but js produced ${cpIdx}`);
+  }
+  // Per-pass quality bits.
+  if (cpLv.qualityPerPassBits) {
+    for (let P = 0; P < Math.min(jsLv.sweeps.length, cpLv.qualityPerPassBits.length); P++) {
+      const jsQ = bitsHex(jsLv.sweeps[P].qualityAfter);
+      const cpQ = cpLv.qualityPerPassBits[P];
+      if (jsQ !== cpQ) {
+        fail++;
+        if (examples.length < 10) examples.push(`L${L}/P${P} [qualityAfter]: js=${jsQ} cpp=${cpQ}`);
+      }
+    }
+  }
+  // Per-level total_weight pre/post + nAfterCollapse.
+  if (cpLv.totalWeightBitsPre != null && jsLv.totalWeightPre != null) {
+    const jsTW = bitsHex(jsLv.totalWeightPre);
+    if (jsTW !== cpLv.totalWeightBitsPre) {
+      fail++;
+      if (examples.length < 10) examples.push(`L${L} [totalWeightPre]: js=${jsTW} cpp=${cpLv.totalWeightBitsPre}`);
+    }
+  }
+  if (cpLv.totalWeightBitsPost != null && jsLv.totalWeightPost != null) {
+    const jsTW = bitsHex(jsLv.totalWeightPost);
+    if (jsTW !== cpLv.totalWeightBitsPost) {
+      fail++;
+      if (examples.length < 10) examples.push(`L${L} [totalWeightPost]: js=${jsTW} cpp=${cpLv.totalWeightBitsPost}`);
+    }
+  }
+  if (cpLv.nAfterCollapse != null && jsLv.nAfterCollapse != null) {
+    if (jsLv.nAfterCollapse !== cpLv.nAfterCollapse) {
+      fail++;
+      if (examples.length < 10) examples.push(`L${L} [nAfterCollapse]: js=${jsLv.nAfterCollapse} cpp=${cpLv.nAfterCollapse}`);
+    }
   }
   // Skip post-level n2c compare: JS run does not expose pre-renumber n2c.
 }

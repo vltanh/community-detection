@@ -28,8 +28,9 @@ const trace = JSON.parse(fs.readFileSync(tracePath, "utf8"));
 globalThis.window = globalThis;
 globalThis.window.COMDET = { FIXTURE: { nodes: [], edges: [], gt: [] } };
 const WEB = "/home/vltanh/Documents/web/vltanh.github.io/comdet/js";
-await import(path.join(WEB, "louvain/louvain.js"));
 await import(path.join(WEB, "sbm/util.js"));
+await import(path.join(WEB, "sbm/rng.js"));
+await import(path.join(WEB, "sbm/graph.js"));
 await import(path.join(WEB, "sbm/block_state.js"));
 await import(path.join(WEB, "sbm/mcmc.js"));
 await import(path.join(WEB, "sbm/nested_state.js"));
@@ -55,12 +56,12 @@ function bitsOf(x) {
 const renum = trace.renum_to_orig;
 const N = renum.length;
 const edges = loadEdges(edgePath, renum);
-const G = COMDET.LOUVAIN.Graph(N, edges, { correctSelfLoops: false });
+const G = COMDET.SBM.Graph(N, edges, { correctSelfLoops: false });
 const seed = trace.seed != null ? (trace.seed >>> 0) : 7;
 
 function checkFlat() {
   const state = COMDET.SBM.BlockState(G, { mode, init: trace.init_membership });
-  const RNG = COMDET.LOUVAIN.MT19937(seed);
+  const RNG = COMDET.SBM.MT19937(seed);
 
   const sj = state.entropy(), sc = trace.S_init;
   const sjBits = bitsOf(sj), scBits = bitsOf(sc);
@@ -109,7 +110,7 @@ function checkNested() {
     graphs.push(built.graph);
     states.push(COMDET.SBM.BlockState(built.graph, { mode: "ndc", init: built.init }));
   }
-  const RNG = COMDET.LOUVAIN.MT19937(seed);
+  const RNG = COMDET.SBM.MT19937(seed);
   let visits = 0, dsMm = 0, toMm = 0, accMm = 0, voMm = 0;
   for (let sw = 0; sw < trace.sweeps.length; sw++) {
     const swT = trace.sweeps[sw];

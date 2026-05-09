@@ -11,7 +11,7 @@
  *   - per-sweep S_post and final S byte-equal (relative 1e-12).
  *   - final per-level membership byte-equal.
  *
- * Both legs (cpp + JS) seed std::mt19937 / louvain.js MT19937 from
+ * Both legs (cpp + JS) seed std::mt19937 / SBM.MT19937 (rng.js) from
  * the same Knuth recurrence; the oracle bypasses JS's RNG draws so
  * byte-equality lives on the deterministic-given-(toS, accept)
  * post-conditions (dS, partition update).
@@ -49,8 +49,9 @@ if (nestedFlag) {
 globalThis.window = globalThis;
 globalThis.window.COMDET = { FIXTURE: { nodes: [], edges: [], gt: [] } };
 const WEB = path.join(__dirname, "../../../vltanh.github.io/comdet/js");
-await import(path.join(WEB, "louvain/louvain.js"));
 await import(path.join(WEB, "sbm/util.js"));
+await import(path.join(WEB, "sbm/rng.js"));
+await import(path.join(WEB, "sbm/graph.js"));
 await import(path.join(WEB, "sbm/block_state.js"));
 await import(path.join(WEB, "sbm/mcmc.js"));
 await import(path.join(WEB, "sbm/nested_state.js"));
@@ -86,13 +87,13 @@ function withinRelS(drift, S) {
 const renum = trace.renum_to_orig;
 const N = renum.length;
 const edges = loadEdges(edgePath, renum);
-const G = COMDET.LOUVAIN.Graph(N, edges, { correctSelfLoops: false });
+const G = COMDET.SBM.Graph(N, edges, { correctSelfLoops: false });
 
 // Replay one sweep against `state`: feed (toS, accept) from `lvl.visits`
 // through opts.proposalOracle + opts.visitOrder, validate dS / cands /
 // fromR / toS / accept / moved per-visit byte-equal vs cpp, and verify
 // state.entropy() matches lvl.S_post within REL_S_TOL.
-const RNG_STUB = COMDET.LOUVAIN.MT19937(0);
+const RNG_STUB = COMDET.SBM.MT19937(0);
 function replaySweep(state, lvl, beta, sweepLabel, agg) {
   const oracle = (v, i) => {
     const t = lvl.visits[i];

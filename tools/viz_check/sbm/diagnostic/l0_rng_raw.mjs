@@ -1,5 +1,5 @@
 /* L0 diagnostic: byte-equal first N raw outputs of std::mt19937(seed)
- * vs JS COMDET.LOUVAIN.MT19937(seed).
+ * vs JS COMDET.SBM.MT19937(seed).
  *
  * Skill: byte-equal-tracer / Diagnostic ladder L0.
  * Closes audit row A (RNG byte stream).
@@ -28,9 +28,11 @@ if (cpp.status !== 0) {
 const cppStream = cpp.stdout.trim().split("\n").map(s => Number(s) >>> 0);
 
 globalThis.window = globalThis;
+globalThis.window.COMDET = {};
 const WEB = path.resolve(__dirname, "../../../../vltanh.github.io/comdet/js");
-await import(path.join(WEB, "louvain/louvain.js"));
-const rng = window.COMDET.LOUVAIN.MT19937(seed);
+await import(path.join(WEB, "sbm/util.js"));
+await import(path.join(WEB, "sbm/rng.js"));
+const rng = window.COMDET.SBM.MT19937(seed);
 const jsStream = Array.from({ length: N }, () => rng.raw() >>> 0);
 
 let mismatches = 0;

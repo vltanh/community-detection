@@ -336,5 +336,3 @@ python tools/viz_check/ikc/stress.py [--tiers T1,T2,T3] [--ks 2,3,5,8,10]
 ```
 
 (set `IKC_CONDA_ENV=<env>` if `nwbench` isn't right.)
-</content>
-</invoke>

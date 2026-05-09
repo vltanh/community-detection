@@ -132,6 +132,22 @@ class cactus_mincut : public minimum_cut {
             std::fprintf(stderr,
                 "[TRACE-CM] capforest iter:%d before_n:%u uf_n:%u\n",
                 loop_iter, current_graph->number_of_nodes(), uf.n());
+            if (loop_iter == 0) {
+                for (NodeID gn : current_graph->nodes()) {
+                    std::fprintf(stderr, "[TRACE-CM]  pre_adj[%u]:", gn);
+                    for (EdgeID e : current_graph->edges_of(gn)) {
+                        NodeID t = current_graph->getEdgeTarget(gn, e);
+                        EdgeWeight w = current_graph->getEdgeWeight(gn, e);
+                        std::fprintf(stderr, "(%u,w%lu)", t, (unsigned long)w);
+                    }
+                    std::fprintf(stderr, "\n");
+                }
+                std::fprintf(stderr, "[TRACE-CM]  uf_after_capforest:");
+                for (NodeID gn : current_graph->nodes()) {
+                    std::fprintf(stderr, " %u->%u", gn, uf.Find(gn));
+                }
+                std::fprintf(stderr, "\n");
+            }
             if (uf.n() < current_graph->number_of_nodes()) {
                 auto newg =
                     contraction::fromUnionFind(current_graph, &uf, true);
@@ -144,6 +160,15 @@ class cactus_mincut : public minimum_cut {
                                  gn);
                     for (NodeID cv : graphs.back()->containedVertices(gn))
                         std::fprintf(stderr, "%u,", cv);
+                    std::fprintf(stderr, "\n");
+                }
+                for (NodeID gn : graphs.back()->nodes()) {
+                    std::fprintf(stderr, "[TRACE-CM]  cap_adj[%u]:", gn);
+                    for (EdgeID e : graphs.back()->edges_of(gn)) {
+                        NodeID t = graphs.back()->getEdgeTarget(gn, e);
+                        EdgeWeight w = graphs.back()->getEdgeWeight(gn, e);
+                        std::fprintf(stderr, "(%u,w%lu)", t, (unsigned long)w);
+                    }
                     std::fprintf(stderr, "\n");
                 }
                 mincut = minimum_cut_helpers<GraphPtr>::updateCut(
@@ -233,6 +258,16 @@ class cactus_mincut : public minimum_cut {
                      graphs.back()->number_of_nodes(),
                      (unsigned long)graphs.back()->number_of_edges(),
                      (unsigned long)mincut);
+        // Dump guaranteed_edges contents per ge_id for cross-side parity.
+        for (size_t gid = 0; gid < ge_ids.size(); gid++) {
+            std::fprintf(stderr,
+                "[TRACE-CM] guaranteed_edges gid:%zu graphs_idx:%zu count:%zu",
+                gid, ge_ids[gid], guaranteed_edges[gid].size());
+            for (auto& e : guaranteed_edges[gid]) {
+                std::fprintf(stderr, " (%u,%u)", e.first, e.second);
+            }
+            std::fprintf(stderr, "\n");
+        }
         auto out_graph = rc.flowMincut(graphs);
 
         // Dump cactus tree post-flowMincut, pre-setVertexLocations.

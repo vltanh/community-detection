@@ -78,7 +78,7 @@ void jsShuffle(std::vector<T>& a, JSRng& rng) {
 // [0.5, 5000) step 0.0625 plus a geometric sweep on [1e-6, 1).
 //
 // Source: https://www.netlib.org/fdlibm/e_log.c
-double jsLog(double x) {
+[[maybe_unused]] double jsLog(double x) {
     static constexpr double ln2_hi = 6.93147180369123816490e-01;
     static constexpr double ln2_lo = 1.90821492927058770002e-10;
     static constexpr double two54  = 1.80143985094819840000e+16;
@@ -158,7 +158,7 @@ double jsLog(double x) {
 // in case a future caller passes positive args.
 //
 // Source: https://www.netlib.org/fdlibm/e_exp.c
-double jsExp(double x) {
+[[maybe_unused]] double jsExp(double x) {
     static constexpr double one         = 1.0;
     static constexpr double halF[2]     = {0.5, -0.5};
     static constexpr double huge_       = 1.0e+300;
@@ -236,7 +236,7 @@ double jsExp(double x) {
 // bit-for-bit. The reflection branch (x < 0.5) isn't hit by any
 // entropy / DL call in this tracer (every arg comes from `+1` of a
 // nonnegative integer-or-half-integer state value).
-double jsLgamma(double x) {
+[[maybe_unused]] double jsLgamma(double x) {
     if (x < 0.5) return jsLog(M_PI / std::sin(M_PI * x)) - jsLgamma(1.0 - x);
     static const double c[9] = {
         0.99999999999980993,    676.5203681218851,  -1259.1392167224028,
@@ -250,6 +250,35 @@ double jsLgamma(double x) {
     for (int i = 1; i < g + 2; ++i) a += c[i] / (x + (double)i);
     return 0.5 * jsLog(2.0 * M_PI) + (x + 0.5) * jsLog(t) - t + jsLog(a);
 }
+
+// ── Compile-time tracer-mode toggle ──────────────────────────────────
+// -DTRACER_MODE    : route entropy/DL math through V8-bit-equivalent
+//                    jsLog / jsExp / jsLgamma ports. Bit-equal target vs
+//                    JS production walker (comdet/js/sbm/).
+// -DCANONICAL_MODE : route through libm std::log / std::exp / std::lgamma.
+//                    Build-pair test reference; structural agreement only
+//                    vs JS (libm differs from V8 by ~1 ulp on log/exp and
+//                    by ~1 ulp on lgamma vs the JS Lanczos port).
+// Per skill byte-equal-tracer / "Compile-time tracer-mode toggle":
+// same source file produces two binaries via the macro selection.
+#if !defined(CANONICAL_MODE) && !defined(TRACER_MODE)
+#  error "Must define exactly one of -DCANONICAL_MODE or -DTRACER_MODE"
+#endif
+#if defined(CANONICAL_MODE) && defined(TRACER_MODE)
+#  error "-DCANONICAL_MODE and -DTRACER_MODE are mutually exclusive"
+#endif
+
+#ifdef TRACER_MODE
+  static inline double trace_log   (double x) { return jsLog(x); }
+  static inline double trace_exp   (double x) { return jsExp(x); }
+  static inline double trace_lgamma(double x) { return jsLgamma(x); }
+  static constexpr const char* TRACE_MODE_NAME = "TRACER_MODE";
+#else
+  static inline double trace_log   (double x) { return std::log(x); }
+  static inline double trace_exp   (double x) { return std::exp(x); }
+  static inline double trace_lgamma(double x) { return std::lgamma(x); }
+  static constexpr const char* TRACE_MODE_NAME = "CANONICAL_MODE";
+#endif
 
 // ── Edge / partition I/O ────────────────────────────────────────────
 struct Graph {
@@ -371,8 +400,23 @@ std::vector<int> loadInitMembership(const std::string& path,
 
 // ── BlockState ──────────────────────────────────────────────────────
 // Mirrors comdet/js/sbm/block_state.js. Capacity B = N (max possible
-// block count); ers stored row-major B*B with diagonal doubled to match
-// graph-tool's e_rr "each internal edge contributes twice" convention.
+// block count for a flat partition); ers stored row-major B*B with
+// diagonal doubled to match graph-tool's e_rr "each internal edge
+// contributes twice" convention.
+//
+// Latent limit: mcmcSweep can propose a fresh-block id `maxId+1` whose
+// value drifts above N over many sweeps because empty slots aren't
+// recycled (neList tracks live ids but does not renumber). When that
+// happens reads/writes at id `s >= B` are out-of-bounds:
+//   cpp: std::vector OOB = undefined behaviour (heap overflow / crash);
+//   JS:  Int32Array OOB returns undefined → coerces to 0 silently +
+//        OOB writes are dropped (still a bug in absolute Σ but does
+//        not crash). Graph-tool (canonical) avoids the issue via
+//        sparse maps. Surfaces as a `double free / heap overflow`
+//        crash on `nested-ndc fixture32 sweeps>=12`. Documented in
+//        community-detection/sbm/audit.md ("Known latent crash"); not
+//        fixed here so both ports stay structurally faithful to each
+//        other (same B=N design, both have the same root-cause issue).
 enum class Mode { DC, NDC, PP };
 
 struct BlockState {
@@ -400,7 +444,7 @@ struct BlockState {
         useEdgesDl = (mode != Mode::PP);
         usePartitionDl = true;
         useDegreeDl = (mode == Mode::DC);
-        for (int v = 0; v < N; ++v) dcDegreeConst += jsLgamma(g.strength[v] + 1.0);
+        for (int v = 0; v < N; ++v) dcDegreeConst += trace_lgamma(g.strength[v] + 1.0);
         rebuildFromMembership();
     }
 
@@ -509,18 +553,18 @@ struct BlockState {
         b[v] = s;
     }
 
-    inline double safelog(double x) const { return x > 0.0 ? jsLog(x) : 0.0; }
+    inline double safelog(double x) const { return x > 0.0 ? trace_log(x) : 0.0; }
 
     // log binom(n, k) = lgamma(n+1) - lgamma(k+1) - lgamma(n-k+1).
     // Mirror comdet/js/sbm/util.js:lbinom early-return for k==0 || k==n;
     // the Lanczos approximation of lgamma(1) is not exactly 0, so
-    // computing the formula on n=k yields -jsLgamma(1) instead of 0,
+    // computing the formula on n=k yields -trace_lgamma(1) instead of 0,
     // breaking bit-equal vs JS at "open new block" virtualMove edges
     // where logChooseRep(1, 2) = lbinom(2, 2) sits in degreeDlSubset.
     double lbinom(double n, double k) const {
         if (n < 0.0 || k < 0.0 || k > n) return 0.0;
         if (k == 0.0 || k == n) return 0.0;
-        return jsLgamma(n + 1.0) - jsLgamma(k + 1.0) - jsLgamma(n - k + 1.0);
+        return trace_lgamma(n + 1.0) - trace_lgamma(k + 1.0) - trace_lgamma(n - k + 1.0);
     }
     // logChooseRep(n,k) = log C(n+k-1, k), stars-and-bars.
     double logChooseRep(double n, double k) const {
@@ -540,12 +584,12 @@ struct BlockState {
         double S = 0.0;
         for (size_t i = 0; i < ne.size(); ++i) {
             int r = ne[i];
-            S += (mode == Mode::DC) ? jsLgamma(er[r] + 1.0) : er[r] * safelog((double)nr[r]);
+            S += (mode == Mode::DC) ? trace_lgamma(er[r] + 1.0) : er[r] * safelog((double)nr[r]);
             double e_rr_half = ers[(size_t)r * B + r] / 2.0;
-            S -= e_rr_half * LOG2 + jsLgamma(e_rr_half + 1.0);
+            S -= e_rr_half * LOG2 + trace_lgamma(e_rr_half + 1.0);
             for (size_t j = i + 1; j < ne.size(); ++j) {
                 int s = ne[j];
-                S -= jsLgamma(ers[(size_t)r * B + s] + 1.0);
+                S -= trace_lgamma(ers[(size_t)r * B + s] + 1.0);
             }
         }
         return S;
@@ -556,9 +600,9 @@ struct BlockState {
     }
     double partitionDl() const {
         std::vector<int> ne = sortedNonEmpty();
-        double S = jsLgamma((double)N + 1.0);
-        for (int r : ne) S -= jsLgamma((double)nr[r] + 1.0);
-        S += lbinom((double)N - 1.0, (double)Bne - 1.0) + jsLog((double)N);
+        double S = trace_lgamma((double)N + 1.0);
+        for (int r : ne) S -= trace_lgamma((double)nr[r] + 1.0);
+        S += lbinom((double)N - 1.0, (double)Bne - 1.0) + trace_log((double)N);
         return S;
     }
     double degreeDlUniform() const {
@@ -589,7 +633,7 @@ struct BlockState {
         std::vector<int> ne = sortedNonEmpty();
         double Min = 0.0;
         for (int r : ne) Min += (double)nr[r] * (nr[r] - 1) / 2.0;
-        return jsLog(std::min(E, Min) + 1.0);
+        return trace_log(std::min(E, Min) + 1.0);
     }
 
     double entropy() const {
@@ -606,6 +650,29 @@ struct BlockState {
         return S;
     }
 
+    // Diagnostic: emit each entropy component for offline JS comparison.
+    // Skill: byte-equal-tracer / per-step probe (audit row M).
+    struct EntropyBreakdown {
+        double exact, edges_dl, dc_deg_const, partition_dl, degree_dl, pp_lik, pp_edges, total;
+    };
+    EntropyBreakdown entropyBreakdown() const {
+        EntropyBreakdown b{};
+        if (mode == Mode::PP) {
+            b.pp_lik = ppLikelihood();
+            b.pp_edges = ppEdgesDl();
+            b.partition_dl = usePartitionDl ? partitionDl() : 0.0;
+            b.total = b.pp_lik + b.pp_edges + b.partition_dl;
+        } else {
+            b.exact = exactEntropy();
+            b.edges_dl = useEdgesDl ? edgesDl() : 0.0;
+            b.dc_deg_const = (mode == Mode::DC) ? dcDegreeConst : 0.0;
+            b.partition_dl = usePartitionDl ? partitionDl() : 0.0;
+            b.degree_dl = useDegreeDl ? degreeDlUniform() : 0.0;
+            b.total = b.exact + b.edges_dl - b.dc_deg_const + b.partition_dl + b.degree_dl;
+        }
+        return b;
+    }
+
     // Subset entropy: sum of vterm/eterm entries that involve r or s.
     // Iterates the sorted neList prefix for the cross-block eterms;
     // on dnc B=N=906 but Bne stays ~30, so virtualMove drops from
@@ -615,30 +682,30 @@ struct BlockState {
     // the refactor and the exploration sequence is preserved.
     double subsetEntropy(int r, int s) const {
         double S = 0.0;
-        if (nr[r] > 0) S += (mode == Mode::DC) ? jsLgamma(er[r] + 1.0) : er[r] * safelog((double)nr[r]);
-        if (nr[s] > 0) S += (mode == Mode::DC) ? jsLgamma(er[s] + 1.0) : er[s] * safelog((double)nr[s]);
+        if (nr[r] > 0) S += (mode == Mode::DC) ? trace_lgamma(er[r] + 1.0) : er[r] * safelog((double)nr[r]);
+        if (nr[s] > 0) S += (mode == Mode::DC) ? trace_lgamma(er[s] + 1.0) : er[s] * safelog((double)nr[s]);
         if (nr[r] > 0) {
             double e_rr_half = ers[(size_t)r * B + r] / 2.0;
-            S -= e_rr_half * LOG2 + jsLgamma(e_rr_half + 1.0);
+            S -= e_rr_half * LOG2 + trace_lgamma(e_rr_half + 1.0);
         }
         if (nr[s] > 0 && s != r) {
             double e_ss_half = ers[(size_t)s * B + s] / 2.0;
-            S -= e_ss_half * LOG2 + jsLgamma(e_ss_half + 1.0);
+            S -= e_ss_half * LOG2 + trace_lgamma(e_ss_half + 1.0);
         }
-        if (r != s) S -= jsLgamma(ers[(size_t)r * B + s] + 1.0);
+        if (r != s) S -= trace_lgamma(ers[(size_t)r * B + s] + 1.0);
         std::vector<int> ne = sortedNonEmpty();
         for (size_t i = 0; i < ne.size(); ++i) {
             int t = ne[i];
             if (t == r || t == s) continue;
-            S -= jsLgamma(ers[(size_t)r * B + t] + 1.0);
-            S -= jsLgamma(ers[(size_t)s * B + t] + 1.0);
+            S -= trace_lgamma(ers[(size_t)r * B + t] + 1.0);
+            S -= trace_lgamma(ers[(size_t)s * B + t] + 1.0);
         }
         return S;
     }
     double partitionDlSubset(int rA, int sA) const {
         double S = lbinom((double)N - 1.0, (double)Bne - 1.0);
-        if (nr[rA] > 0) S -= jsLgamma((double)nr[rA] + 1.0);
-        if (nr[sA] > 0 && sA != rA) S -= jsLgamma((double)nr[sA] + 1.0);
+        if (nr[rA] > 0) S -= trace_lgamma((double)nr[rA] + 1.0);
+        if (nr[sA] > 0 && sA != rA) S -= trace_lgamma((double)nr[sA] + 1.0);
         return S;
     }
     double edgesDlSubset() const {
@@ -889,7 +956,7 @@ int runSweep(BlockState& st, JSRng& rng, double beta,
             accept = true;
         } else {
             acceptU = rng.acceptUniform();
-            accept = (acceptU < jsExp(-beta * dS));
+            accept = (acceptU < trace_exp(-beta * dS));
         }
         bool committed = accept && (toS != fromR);
         if (committed) { st.moveVertex(v, toS); ++sweepAccepted; }
@@ -948,7 +1015,8 @@ int runNested(const Args& args, Mode mode, Graph& g0,
     JSRng rng((uint32_t)args.seed);
     JEmit em;
     auto& o = em.os;
-    o << "{\"variant\":\"nested-" << args.mode
+    o << "{\"trace_mode\":\"" << TRACE_MODE_NAME
+      << "\",\"variant\":\"nested-" << args.mode
       << "\",\"seed\":" << args.seed
       << ",\"sweeps_planned\":" << args.sweeps
       << ",\"beta\":";
@@ -1044,7 +1112,8 @@ int main(int argc, char** argv) try {
 
     JEmit em;
     auto& o = em.os;
-    o << "{\"mode\":\"" << args.mode
+    o << "{\"trace_mode\":\"" << TRACE_MODE_NAME
+      << "\",\"mode\":\"" << args.mode
       << "\",\"seed\":" << args.seed
       << ",\"sweeps_planned\":" << args.sweeps
       << ",\"beta\":";
@@ -1061,6 +1130,18 @@ int main(int argc, char** argv) try {
     o << "],\"S_init\":";
     em.writeDouble(st.entropy());
     o << ",\"Bne_init\":" << st.Bne;
+    {
+        auto eb = st.entropyBreakdown();
+        o << ",\"S_init_breakdown\":{\"exact\":";
+        em.writeDouble(eb.exact);
+        o << ",\"edges_dl\":";  em.writeDouble(eb.edges_dl);
+        o << ",\"dc_deg_const\":"; em.writeDouble(eb.dc_deg_const);
+        o << ",\"partition_dl\":"; em.writeDouble(eb.partition_dl);
+        o << ",\"degree_dl\":";  em.writeDouble(eb.degree_dl);
+        o << ",\"pp_lik\":";     em.writeDouble(eb.pp_lik);
+        o << ",\"pp_edges\":";   em.writeDouble(eb.pp_edges);
+        o << "}";
+    }
     o << ",\"sweeps\":[";
 
     std::vector<int> order;

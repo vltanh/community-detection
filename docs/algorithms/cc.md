@@ -20,9 +20,14 @@ implementation detail and source-code pointers.
 - Binary: same `constrained_clustering` C++ binary that hosts WCC and
   CM (Park 2024). CC is invoked as `MincutOnly --connectedness-criterion 0`;
   there is no separate `CC` subcommand.
-- JS port (planned): `vltanh.github.io/comdet/js/cc/cc.js`. Walker
-  pending the Phase 4c kernel port. CC's `--connectedness-criterion` is
-  fixed at `0` so no parser walker is needed.
+- JS port: [`vltanh.github.io/comdet/js/cc/cc.js`](https://github.com/vltanh/vltanh.github.io/blob/main/comdet/js/cc/cc.js).
+  Byte-equal vs the binary on 306 cells (17 fixtures × 9 seeds × two
+  partition sources: legacy partition-synth and SBM-Flat-PP), 429,192
+  cumulative output records, 0 mismatches. Verification harness at
+  [`tools/viz_check/cc/`](../../tools/viz_check/cc/) (`stress_matrix.sh`
+  for the legacy panel, `stress_3tier.py` for the SBM-Flat-PP panel).
+  CC's `--connectedness-criterion` is fixed at `0`, so no parser walker
+  is needed.
 
 ## Entrypoint
 

@@ -4,12 +4,26 @@
 
 Connectivity Modifier. The full Park 2024 pipeline: [WCC](./wcc.md)'s
 recursive mincut, plus a re-clustering pass on each split half via a
-base algorithm (Leiden CPM/Mod, Infomap, Louvain). Heaviest of the
-three connectivity post-procs ([CC](./cc.md), WCC, CM).
+base algorithm (Leiden CPM, Leiden Mod, Louvain, Infomap). Heaviest of
+the three connectivity post-procs ([CC](./cc.md), WCC, CM).
 
 Companion to [`comdet/cm.html`](https://vltanh.me/comdet/cm.html). The
 page explains the algorithm in plain English; this file holds the
 implementation detail and source-code pointers.
+
+Pipeline shape per Park 2024:
+
+1. Initial base clustering produces the input partition.
+2. Filter pass: drop clusters of size below `B` (default 11) plus
+   tree-shaped clusters.
+3. CM loop: per cluster, repeat {mincut, threshold check, base-method
+   recluster of any side > 1} until every leaf cluster is
+   well-connected.
+4. Final filter: drop sub-clusters that ended up below `B`.
+
+Stages 2 and 4 live in `cm_pipeline`'s Python orchestration around the
+binary; the C++ binary (and the JS port that mirrors it) implements
+stage 3 plus the initial connected-components seed step.
 
 ## Provenance
 
@@ -31,8 +45,11 @@ implementation detail and source-code pointers.
   ([`constrained.h:243, 279`](../../constrained-clustering/includes/constrained.h#L243)),
   not libleidenalg. The wrapper at `src/cm/pipeline.sh` accepts
   `leiden-cpm`, `leiden-mod`, and `louvain`; `infomap` is rejected.
-- JS port (planned): `vltanh.github.io/comdet/js/cm/cm.js`. Walker
-  pending the Phase 4c kernel port + the Leiden kernel port.
+- JS port: [`vltanh.github.io/comdet/js/cm/cm.js`](https://github.com/vltanh/vltanh.github.io/blob/main/comdet/js/cm/cm.js).
+  L4 self-RNG byte-equal vs canonical tracer (TRACER_MODE swapped
+  build) across 360 stress cells (legacy 6-fixture × 9-seed + 3-tier
+  17-fixture × 9-seed × {Leiden input, SBM-Flat-PP input} × Leiden-Mod
+  base). See `community-detection/tools/viz_check/cm/` for the harnesses.
 
 ## Entrypoint
 

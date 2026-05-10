@@ -1,40 +1,43 @@
-"""CC L4 3-tier empirical-network stress driver (SBM-Flat-PP input).
+"""CC L4 3-tier empirical-network stress driver.
 
 Runs the CC byte-equal cross-check on the canonical 3-tier panel from
-reference_cd_stress_tiers.md (17 fixtures across T1/T2/T3, n=800..23,133),
-with the input partition produced by the SBM **flat-PP** kernel (Zhang+
-Peixoto 2020 Bernoulli-2-rate planted-partition model), seeded by an
-sqrt(N) random init then advanced via MCMC sweeps. The SBM L4 self-RNG
-bit-equal contract is already closed at the 3-tier panel level (see
-sbm/audit.md: 459/459 PASS, 8.49M visits across flat-{dc,ndc,pp});
-feeding flat-pp's final membership into CC tests CC under realistic
-empirical input partitions rather than the synthetic K-mod assignments
-used by stress_matrix.sh.
+reference_cd_stress_tiers.md (17 fixtures across T1/T2/T3, n=800..23,133)
+under one of several input-partition sources. The partition source does
+not bear on CC's byte-equal contract (CC is deterministic BFS over an
+input partition; rows A-M in cc_audit.md are unchanged across input
+shapes) but a richer input panel exercises more (graph, partition)
+combinations of the kernel's only state.
 
-Per (fixture, seed):
-  1. Synthesize init partition: K0=sqrt(N) labels via Random(seed).
-  2. cpp SBM flat tracer (/tmp/sbm_flat_kernel_check --mode=pp ...)
-     consumes init.com + edge.csv, runs MCMC sweeps under MT19937(seed),
-     emits trace JSON with final_membership + renum_to_orig.
-  3. Convert final_membership to a CC-format com.csv (original node-id
-     in column 0, cluster id in column 1).
-  4. cpp CC canonical tracer (/tmp/cc_kernel_check_canonical) and
+Input-partition variants (--partition):
+  - sbm-flat-pp: SBM Flat-PP MCMC final_membership (Zhang+Peixoto 2020),
+    seeded by K0=sqrt(N) Random(seed) init then advanced T1=5 / T2=3 /
+    T3=2 MCMC sweeps. Matches sbm/diagnostic/stress_3tier.py schedule.
+  - leiden-mod: Leiden-Mod (quality=mod, param=1.0, iters=1) final
+    membership under MT19937(seed). Matches CM's leiden-mod base method.
+  - leiden-cpm: Leiden-CPM final membership; param = --resolution
+    (default 0.5, typed exactly as `0.5`). Matches CM's leiden-cpm base
+    method when --resolution is set to the matching gamma.
+
+Per (fixture, seed, partition):
+  1. Run the partition tracer (SBM-flat-pp or Leiden); emit a
+     CC-format com.csv (`node_id,cluster_id`, header + one row per
+     original input node).
+  2. cpp CC canonical tracer (/tmp/cc_kernel_check_canonical) and
      swapped tracer (/tmp/cc_kernel_check_swapped) both run on
-     (edge.csv, cc_com.csv); their outputs must be byte-equal (vacuous
+     (edge.csv, com.csv); their outputs must be byte-equal (vacuous
      for CC since it has zero RNG/FP).
-  5. JS CC replay (kernel_check.mjs) reads canonical's JSON trace,
+  3. JS CC replay (kernel_check.mjs) reads canonical's JSON trace,
      runs comdet/js/cc/cc.js on the same input, byte-compares per-
      component node-id-ASC contents.
 
 PASS = canon-vs-swap byte-equal AND tracer-vs-JS byte-equal.
 
-Per-tier sweep counts mirror sbm/diagnostic/stress_3tier.py's
-flat-PP-friendly schedule: T1=5, T2=3, T3=2 sweeps. Sweep count
-affects what partition lands in CC but does not bear on the byte-equal
-contract — CC sees only the final membership.
+Seeds avoid 0 (igraph MT19937 quirk maps 0 -> 4357 per rng_mt19937.c).
 
 Usage:
     python stress_3tier.py [--tiers T1,T2,T3] [--seeds s1,...]
+                            [--partition sbm-flat-pp|leiden-mod|leiden-cpm]
+                            [--resolution 0.5]
                             [--workers N] [--quick] [--timeout 900]
 """
 from __future__ import annotations
@@ -56,10 +59,12 @@ import driver as D  # noqa: E402
 REPO = D.repo_root_from_here(HERE)
 NETS = REPO.parent / "data" / "empirical_networks" / "networks"
 SBM_TRACER = Path("/tmp/sbm_flat_kernel_check")
+LEIDEN_TRACER = Path("/tmp/leiden_kernel_check")
 CC_CANON = Path("/tmp/cc_kernel_check_canonical")
 CC_SWAP = Path("/tmp/cc_kernel_check_swapped")
 JS_REPLAY = HERE / "kernel_check.mjs"
 SBM_BUILD_DIR = REPO / "tools" / "viz_check" / "sbm"
+LEIDEN_BUILD_DIR = REPO / "tools" / "viz_check" / "leiden"
 
 TIERS = {
     "T1": [
@@ -161,31 +166,21 @@ def write_cc_com(renum: list[str], mem: list[int], out: Path) -> None:
             f.write(f"{orig},{cid}\n")
 
 
-def run_cell(name: str, edge: str, seed: int, sweeps: int,
-             timeout: int, scratch: str
-             ) -> tuple[str, int, bool, int, int, int, str]:
-    """One (fixture, seed) cell.
+def make_partition_sbm_flat_pp(edge_path: Path, seed: int, sweeps: int,
+                               timeout: int, scratch_dir: Path, tag: str,
+                               cc_com: Path
+                               ) -> tuple[bool, int, int, str]:
+    """Produce CC com.csv from an SBM Flat-PP MCMC run.
 
-    Returns (name, seed, ok, n, K_final, records, log_tail)."""
-    edge_path = Path(edge)
-    scratch_dir = Path(scratch)
-    scratch_dir.mkdir(parents=True, exist_ok=True)
-    tag = f"{name}_s{seed}"
+    Returns (ok, n, K_final, msg). On failure msg carries the cause; on
+    success n is the input graph's node count and K_final = number of
+    distinct cluster ids in the final membership."""
     init_com = scratch_dir / f"{tag}_init.com"
     sbm_trace = scratch_dir / f"{tag}_sbm.json"
-    cc_com = scratch_dir / f"{tag}_cc.com"
-    out_canon = scratch_dir / f"{tag}_cc_canon.csv"
-    out_swap = scratch_dir / f"{tag}_cc_swap.csv"
-    json_canon = scratch_dir / f"{tag}_cc_canon.json"
-    json_swap = scratch_dir / f"{tag}_cc_swap.json"
-
-    # Step 1: synthesize init partition (K0=sqrt(N), Random(seed)).
     try:
         init_com, n = synth_init(edge_path, seed, scratch_dir, tag)
     except Exception as e:
-        return name, seed, False, 0, 0, 0, f"init synth fail: {e}"
-
-    # Step 2: SBM Flat-PP tracer.
+        return False, 0, 0, f"init synth fail: {e}"
     try:
         rc = subprocess.run(
             [str(SBM_TRACER), f"--mode={SBM_MODE}", f"--edge={edge_path}",
@@ -193,19 +188,94 @@ def run_cell(name: str, edge: str, seed: int, sweeps: int,
             capture_output=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        return name, seed, False, n, 0, 0, "sbm tracer timeout"
+        return False, n, 0, "sbm tracer timeout"
     if rc.returncode != 0:
         tail = rc.stderr[-400:].decode("utf-8", "replace")
-        return name, seed, False, n, 0, 0, f"sbm rc={rc.returncode}: {tail}"
+        return False, n, 0, f"sbm rc={rc.returncode}: {tail}"
     sbm_trace.write_bytes(rc.stdout)
-
-    # Step 3: convert SBM final_membership to CC com.csv.
     try:
         renum, mem = parse_sbm_trace(sbm_trace)
     except Exception as e:
-        return name, seed, False, n, 0, 0, f"sbm trace parse fail: {e}"
+        return False, n, 0, f"sbm trace parse fail: {e}"
     write_cc_com(renum, mem, cc_com)
     K_final = len(set(mem))
+    # Cleanup intermediates (kept on failure path above).
+    for p in (init_com, sbm_trace):
+        try: p.unlink()
+        except OSError: pass
+    return True, n, K_final, ""
+
+
+def make_partition_leiden(edge_path: Path, seed: int, quality: str,
+                          param: float, timeout: int, scratch_dir: Path,
+                          tag: str, cc_com: Path
+                          ) -> tuple[bool, int, int, str]:
+    """Produce CC com.csv by running the Leiden tracer (iters=1) at the
+    requested quality. Output format from /tmp/leiden_kernel_check is
+    already the CC com.csv shape (header + `<orig_id>,<cluster_id>`)."""
+    try:
+        rc = subprocess.run(
+            [str(LEIDEN_TRACER), str(edge_path), str(cc_com), quality,
+             str(param), str(seed), "1"],
+            capture_output=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False, 0, 0, "leiden tracer timeout"
+    if rc.returncode != 0:
+        tail = rc.stderr[-400:].decode("utf-8", "replace")
+        return False, 0, 0, f"leiden rc={rc.returncode}: {tail}"
+    # Derive n + K_final from the produced com.csv.
+    n = 0
+    cids: set[int] = set()
+    try:
+        with cc_com.open() as f:
+            next(f)  # header
+            for line in f:
+                parts = line.strip().split(",")
+                if len(parts) < 2:
+                    continue
+                n += 1
+                try: cids.add(int(parts[1]))
+                except ValueError: pass
+    except OSError as e:
+        return False, 0, 0, f"leiden com read: {e}"
+    return True, n, len(cids), ""
+
+
+def run_cell(name: str, edge: str, seed: int, sweeps: int, partition: str,
+             resolution: float, timeout: int, scratch: str
+             ) -> tuple[str, int, bool, int, int, int, str]:
+    """One (fixture, seed) cell.
+
+    Returns (name, seed, ok, n, K_final, records, log_tail)."""
+    edge_path = Path(edge)
+    scratch_dir = Path(scratch)
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    tag = f"{name}_{partition}_s{seed}"
+    cc_com = scratch_dir / f"{tag}_cc.com"
+    out_canon = scratch_dir / f"{tag}_cc_canon.csv"
+    out_swap = scratch_dir / f"{tag}_cc_swap.csv"
+    json_canon = scratch_dir / f"{tag}_cc_canon.json"
+    json_swap = scratch_dir / f"{tag}_cc_swap.json"
+
+    # Step 1-3: produce input partition (dispatch on --partition).
+    if partition == "sbm-flat-pp":
+        ok, n, K_final, msg = make_partition_sbm_flat_pp(
+            edge_path, seed, sweeps, timeout, scratch_dir, tag, cc_com,
+        )
+    elif partition == "leiden-mod":
+        ok, n, K_final, msg = make_partition_leiden(
+            edge_path, seed, "mod", 1.0, timeout, scratch_dir, tag, cc_com,
+        )
+    elif partition == "leiden-cpm":
+        ok, n, K_final, msg = make_partition_leiden(
+            edge_path, seed, "cpm", resolution, timeout, scratch_dir, tag,
+            cc_com,
+        )
+    else:
+        return name, seed, False, 0, 0, 0, f"unknown partition: {partition}"
+    if not ok:
+        return name, seed, False, n, K_final, 0, msg
 
     # Step 4: CC canonical tracer.
     try:
@@ -260,8 +330,7 @@ def run_cell(name: str, edge: str, seed: int, sweeps: int,
 
     # Cleanup on PASS; keep on FAIL for diag.
     if ok:
-        for f in (init_com, sbm_trace, cc_com, out_canon, out_swap,
-                  json_canon, json_swap):
+        for f in (cc_com, out_canon, out_swap, json_canon, json_swap):
             try: f.unlink()
             except OSError: pass
 
@@ -281,6 +350,12 @@ def main() -> int:
     ap.add_argument("--sweeps-t1", type=int, default=TIER_SWEEPS["T1"])
     ap.add_argument("--sweeps-t2", type=int, default=TIER_SWEEPS["T2"])
     ap.add_argument("--sweeps-t3", type=int, default=TIER_SWEEPS["T3"])
+    ap.add_argument("--partition", default="sbm-flat-pp",
+                    choices=("sbm-flat-pp", "leiden-mod", "leiden-cpm"),
+                    help="Source of the CC input partition.")
+    ap.add_argument("--resolution", type=float, default=0.5,
+                    help="Resolution gamma for leiden-cpm (ignored otherwise). "
+                         "Default 0.5 matches the canonical symmetric-coverage panel.")
     ap.add_argument("--scratch", default="/tmp/cc_stress_3tier")
     args = ap.parse_args()
 
@@ -293,15 +368,23 @@ def main() -> int:
         seeds = [int(s) for s in args.seeds.split(",")]
         fixtures_per_tier = None
 
-    # Build SBM + CC tracers (no-op if up to date).
-    D.build_tracer(SBM_BUILD_DIR, SBM_TRACER)
-    if not SBM_TRACER.is_file():
-        sys.exit(f"sbm tracer missing: {SBM_TRACER}")
+    # Build CC tracers (no-op if up to date).
     D.build_tracer(HERE, CC_CANON)
     if not CC_CANON.is_file():
         sys.exit(f"cc canonical tracer missing: {CC_CANON}")
     if not CC_SWAP.is_file():
         sys.exit(f"cc swapped tracer missing: {CC_SWAP}")
+
+    # Build the partition-source tracer required by --partition.
+    if args.partition == "sbm-flat-pp":
+        D.build_tracer(SBM_BUILD_DIR, SBM_TRACER)
+        if not SBM_TRACER.is_file():
+            sys.exit(f"sbm tracer missing: {SBM_TRACER}")
+    elif args.partition in ("leiden-mod", "leiden-cpm"):
+        D.build_tracer(LEIDEN_BUILD_DIR, LEIDEN_TRACER)
+        if not LEIDEN_TRACER.is_file():
+            sys.exit(f"leiden tracer missing: {LEIDEN_TRACER}\n"
+                     f"build via: bash {LEIDEN_BUILD_DIR}/instrumented/build.sh")
 
     # Build cell list, grouped per tier.
     tier_cells: dict[str, list[tuple[str, str, int, int]]] = {}
@@ -324,7 +407,11 @@ def main() -> int:
         tier_cells[tier] = cells
 
     total_cells = sum(len(c) for c in tier_cells.values())
-    print(f"CC L4 3-tier stress (SBM-Flat-PP input): tiers={','.join(tiers)} "
+    if args.partition == "leiden-cpm":
+        partition_tag = f"leiden-cpm(gamma={args.resolution})"
+    else:
+        partition_tag = args.partition
+    print(f"CC L4 3-tier stress ({partition_tag} input): tiers={','.join(tiers)} "
           f"seeds={len(seeds)} workers={args.workers} timeout={args.timeout}s "
           f"sweeps={tier_sweeps} total_cells={total_cells}")
     for s in skipped:
@@ -348,7 +435,8 @@ def main() -> int:
         results: list[tuple] = []
         with ProcessPoolExecutor(max_workers=args.workers) as ex:
             futures = [
-                ex.submit(run_cell, *c, args.timeout, args.scratch)
+                ex.submit(run_cell, *c, args.partition, args.resolution,
+                          args.timeout, args.scratch)
                 for c in cells
             ]
             for fut in as_completed(futures):

@@ -195,8 +195,23 @@ const _bbuf = new Float64Array(1);
 const _bview = new BigUint64Array(_bbuf.buffer);
 function bits(x) { _bbuf[0] = x; return _bview[0]; }
 
+// Map JS pass index -> per-pass scalars from JS levels (parallel to jsTop).
+// jsTop is built by flattening levels into [move, refine] passes; rebuild
+// the same flatten here so jsTop[pi] aligns with jsPassScalars[pi].
+const jsPassScalars = [];
+for (let li = 0; li < out.levels.length; li++) {
+  const L = out.levels[li];
+  jsPassScalars.push({ phase: "move",
+                       nb_moves: L.moveCount, total_improv: L.moveImprov });
+  if (L.refineTraces && L.refineTraces.length) {
+    jsPassScalars.push({ phase: "refine",
+                         nb_moves: L.refineCount, total_improv: L.refineImprov });
+  }
+}
+
 let total_visits = 0, total_moves = 0;
 let mm_v = 0, mm_from = 0, mm_to = 0, mm_moved = 0, mm_dQ = 0;
+let mm_nbMoves = 0, mm_totalImprovBits = 0;
 let pass_count_mismatch = false;
 let pass_visit_mismatch_pass = -1;
 
@@ -208,6 +223,26 @@ const passN = Math.min(cppTop.length, jsTop.length);
 for (let pi = 0; pi < passN; pi++) {
   const pc = cppTop[pi];
   const pj = jsTop[pi];
+  const ps = jsPassScalars[pi];
+  // Per-pass scalar bit-equal compare. cpp emits nb_moves + total_improv
+  // per pass in JSON; JS exposes via levels[].moveCount/moveImprov +
+  // refineCount/refineImprov. Catches sum-order drift that produces
+  // bit-equal individual dQ but desynced running totals (move-queue
+  // re-push order, refine RNG draw count parity).
+  if (pc.nb_moves !== ps.nb_moves) {
+    mm_nbMoves++;
+    if (!first_diverge_logged) {
+      first_diverge_logged = true;
+      console.error(`  first diverge: pass=${pi} (phase=${pc.phase}) nb_moves cpp=${pc.nb_moves} js=${ps.nb_moves}`);
+    }
+  }
+  if (bits(pc.total_improv) !== bits(ps.total_improv)) {
+    mm_totalImprovBits++;
+    if (!first_diverge_logged) {
+      first_diverge_logged = true;
+      console.error(`  first diverge: pass=${pi} (phase=${pc.phase}) total_improv bits cpp=${pc.total_improv} js=${ps.total_improv}`);
+    }
+  }
   const visitN = Math.min(pc.moves.length, pj.moves.length);
   for (let mi = 0; mi < visitN; mi++) {
     const mc = pc.moves[mi];
@@ -242,12 +277,14 @@ console.log(`pass-count mismatch: ${pass_count_mismatch}`);
 if (pass_visit_mismatch_pass >= 0) {
   console.log(`pass ${pass_visit_mismatch_pass}: visit-count diverged (cpp=${cppTop[pass_visit_mismatch_pass].moves.length} vs js=${jsTop[pass_visit_mismatch_pass].moves.length})`);
 }
+console.log(`per-pass: nb_moves_mm=${mm_nbMoves}/${passN} total_improv_bit_mm=${mm_totalImprovBits}/${passN}`);
 console.log(`per-visit: v_mm=${mm_v} from_mm=${mm_from} to_mm=${mm_to} moved_mm=${mm_moved} dQ_bit_mm=${mm_dQ}/${total_moves}`);
 console.log(`Q_canon=${cpp.Q_final} Q_js=${out.quality}`);
 
-const total_mm = mm_v + mm_from + mm_to + mm_moved + mm_dQ;
+const total_mm = mm_v + mm_from + mm_to + mm_moved + mm_dQ
+                 + mm_nbMoves + mm_totalImprovBits;
 if (pass_count_mismatch || pass_visit_mismatch_pass >= 0 || total_mm > 0) {
   console.error("FAIL: self-RNG trajectory diverged from cpp.");
   process.exit(1);
 }
-console.log("PASS: JS production walker bit-equal cpp standalone under matching seed.");
+console.log("PASS: JS production walker bit-equal cpp standalone under matching seed (per-visit + per-pass scalars).");

@@ -177,7 +177,17 @@ static bool IsWellConnectedLog(double pre_computed_log,
 struct PopRecord {
     int n;
     int cut;
-    double threshold;
+    // Row E (FP composition order) sub-term probes. canonical evaluates
+    // threshold = pre_log * log(n) in TWO operands (pre_log cached once at
+    // startup as c / log(x); see constrained.cpp:235). The final product
+    // alone bit-matches under matching pre_log + log(n), but only when the
+    // intermediate sub-terms are themselves bit-equal — which row E is
+    // about. We probe all three (pre_log, log_n, threshold final) to lock
+    // operand-order in the diff harness; pre_log is constant across pops
+    // so it's also surfaced once at top-level (pre_computed_log_bits).
+    double pre_log;     // = pre_computed_log (constant across pops; per-pop probe)
+    double log_n;       // = JSLOG((double)cur.size())
+    double threshold;   // = pre_log * log_n
     bool wc;
     std::vector<int> cluster_nodes;
     std::vector<int> in_partition;   // global ids
@@ -213,20 +223,37 @@ static void RunWCC(igraph_t* graph,
         PopRecord rec;
         rec.n = (int)cur.size();
         rec.cut = cut;
-        rec.threshold = pre_computed_log * JSLOG((double)cur.size());
+        // Row E (FP composition order) probe: split the product into its two
+        // operands so the diff harness can localize sub-ulp drift to either
+        // pre_log (constant; cached at startup) or log_n (per-pop), rather
+        // than masking divergence under a final-product compare. Mirrors
+        // canonical: constrained.h:430 does `pre_computed_log * std::log(n)`
+        // as ONE mul of TWO operands, NOT `c * log(n) / log(x)` (3 ops).
+        rec.pre_log = pre_computed_log;
+        rec.log_n = JSLOG((double)cur.size());
+        rec.threshold = rec.pre_log * rec.log_n;
         rec.wc = wc;
         rec.cluster_nodes = cur;
         for (int i : in_local)  rec.in_partition.push_back(VECTOR(idmap)[i]);
         for (int i : out_local) rec.out_partition.push_back(VECTOR(idmap)[i]);
 
-        // Bit-reinterpret threshold for the trace log so divergence is visible.
-        uint64_t thr_bits;
-        std::memcpy(&thr_bits, &rec.threshold, 8);
+        // Bit-reinterpret all three row-E sub-terms for the trace log so any
+        // divergence (in pre_log, log_n, or their product) is visible at the
+        // exact site it surfaces. Probes are append-only per playbook
+        // discipline ("Tracer prints stay"); thr_bits stays as the legacy
+        // probe, pre_log_bits + log_n_bits join it.
+        uint64_t pre_log_bits, log_n_bits, thr_bits;
+        std::memcpy(&pre_log_bits, &rec.pre_log, 8);
+        std::memcpy(&log_n_bits,  &rec.log_n,  8);
+        std::memcpy(&thr_bits,    &rec.threshold, 8);
         fprintf(stderr,
-                "[TRACE-WCC] POP idx=%d n=%d cut=%d thr=%.17g thr_bits=0x%016llx wc=%s "
+                "[TRACE-WCC] POP idx=%d n=%d cut=%d pre_log=%.17g pre_log_bits=0x%016llx "
+                "log_n=%.17g log_n_bits=0x%016llx thr=%.17g thr_bits=0x%016llx wc=%s "
                 "in=%zu out=%zu\n",
-                pop_idx, rec.n, rec.cut, rec.threshold,
-                (unsigned long long)thr_bits,
+                pop_idx, rec.n, rec.cut,
+                rec.pre_log, (unsigned long long)pre_log_bits,
+                rec.log_n,   (unsigned long long)log_n_bits,
+                rec.threshold, (unsigned long long)thr_bits,
                 wc ? "true" : "false",
                 rec.in_partition.size(), rec.out_partition.size());
 
@@ -372,9 +399,25 @@ int main(int argc, char** argv) {
     for (size_t i = 0; i < trace.size(); i++) {
         if (i) std::cout << ",\n";
         const auto& r = trace[i];
-        uint64_t thr_bits;
-        std::memcpy(&thr_bits, &r.threshold, 8);
+        // Row E sub-term probes: pre_log, log_n, threshold (final) bit-
+        // reinterpret. The harness compares all three lockstep so a sub-ulp
+        // drift in either operand is caught BEFORE it can mask under final-
+        // product compare. pre_log is constant across pops (= pre_computed_log
+        // top-level field) but emitted per-pop too so the diff harness needs
+        // no special-case for the constant.
+        uint64_t pre_log_bits, log_n_bits, thr_bits;
+        std::memcpy(&pre_log_bits, &r.pre_log,   8);
+        std::memcpy(&log_n_bits,   &r.log_n,     8);
+        std::memcpy(&thr_bits,     &r.threshold, 8);
         std::cout << "    {\"n\":" << r.n << ",\"cut\":" << r.cut
+                  << ",\"pre_log\":" << r.pre_log
+                  << ",\"pre_log_bits\":\"0x"
+                  << std::hex << std::setw(16) << std::setfill('0') << pre_log_bits
+                  << std::dec << std::setfill(' ') << "\""
+                  << ",\"log_n\":" << r.log_n
+                  << ",\"log_n_bits\":\"0x"
+                  << std::hex << std::setw(16) << std::setfill('0') << log_n_bits
+                  << std::dec << std::setfill(' ') << "\""
                   << ",\"thr\":" << r.threshold
                   << ",\"thr_bits\":\"0x"
                   << std::hex << std::setw(16) << std::setfill('0') << thr_bits

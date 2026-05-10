@@ -110,7 +110,14 @@ report.push(`js:        pops=${jsPops.length} survivors=${r.survivors.length}`);
 
 const N = Math.min(cppPops.length, jsPops.length);
 let nThrBitMM = 0, nClusterMM = 0, nCutMM = 0, nWCMM = 0, nInMM = 0, nOutMM = 0;
+// Row E (FP composition order) sub-term probes. preLog + log_n are the two
+// operands of the threshold product; bit-comparing them lockstep localizes
+// any sub-ulp drift to its origin operand BEFORE the final-product compare
+// (which can silently mask divergent intermediates if they happen to round
+// to the same final value). Probes are append-only per playbook discipline.
+let nPreLogMM = 0, nLogNMM = 0;
 let nFirstMM = -1;
+let firstSubTermDivergence = null;  // halt details for row-E probes
 for (let i = 0; i < N; i++) {
   const c = cppPops[i], j = jsPops[i];
   let cellOK = true;
@@ -120,10 +127,44 @@ for (let i = 0; i < N; i++) {
   if (c.cut !== j.cut) { nCutMM++; cellOK = false; }
   // wc verdict.
   if (c.wc !== j.wellConnected) { nWCMM++; cellOK = false; }
-  // threshold bit-equal via uint64 reinterpret.
+  // Row-E sub-term probes (pre_log, log_n) — present in cpp trace iff the
+  // tracer was rebuilt with the row-E probe patch. Compared lockstep BEFORE
+  // the final-product threshold; halt at first divergence in either sub-term.
+  if (c.pre_log_bits != null && j.preLog != null && !Number.isNaN(j.preLog)) {
+    const cPreBits = BigInt(c.pre_log_bits);
+    const jPreBits = bits(j.preLog);
+    if (cPreBits !== jPreBits) {
+      nPreLogMM++;
+      cellOK = false;
+      if (firstSubTermDivergence === null) {
+        firstSubTermDivergence = { pop: i, field: "pre_log",
+          cpp: c.pre_log_bits, js: "0x" + jPreBits.toString(16).padStart(16, "0") };
+      }
+    }
+  }
+  if (c.log_n_bits != null && j.logN != null && !Number.isNaN(j.logN)) {
+    const cLogBits = BigInt(c.log_n_bits);
+    const jLogBits = bits(j.logN);
+    if (cLogBits !== jLogBits) {
+      nLogNMM++;
+      cellOK = false;
+      if (firstSubTermDivergence === null) {
+        firstSubTermDivergence = { pop: i, field: "log_n",
+          cpp: c.log_n_bits, js: "0x" + jLogBits.toString(16).padStart(16, "0") };
+      }
+    }
+  }
+  // threshold bit-equal via uint64 reinterpret (final product; legacy probe).
   const cBits = BigInt(c.thr_bits);
   const jBits = bits(j.threshold);
-  if (cBits !== jBits) { nThrBitMM++; cellOK = false; }
+  if (cBits !== jBits) {
+    nThrBitMM++;
+    cellOK = false;
+    if (firstSubTermDivergence === null) {
+      firstSubTermDivergence = { pop: i, field: "threshold",
+        cpp: c.thr_bits, js: "0x" + jBits.toString(16).padStart(16, "0") };
+    }
+  }
   // in/out partitions: order-sensitive (canonical emits in node-id order
   // via VieCut's getNodeInCut iteration; JS port mirrors).
   const cIn = c.in.slice(), jIn = j.inPartition.slice();
@@ -133,10 +174,16 @@ for (let i = 0; i < N; i++) {
   if (!cellOK && nFirstMM < 0) nFirstMM = i;
 }
 
-report.push(`per-pop:  thr_bit_mm=${nThrBitMM}/${N} cluster_mm=${nClusterMM} cut_mm=${nCutMM} wc_mm=${nWCMM} in_mm=${nInMM} out_mm=${nOutMM}`);
+report.push(`per-pop:  pre_log_mm=${nPreLogMM}/${N} log_n_mm=${nLogNMM}/${N} thr_bit_mm=${nThrBitMM}/${N} cluster_mm=${nClusterMM} cut_mm=${nCutMM} wc_mm=${nWCMM} in_mm=${nInMM} out_mm=${nOutMM}`);
+if (firstSubTermDivergence !== null) {
+  const d = firstSubTermDivergence;
+  report.push(`first row-E divergence pop[${d.pop}]: field=${d.field} cpp=${d.cpp} js=${d.js}`);
+}
 if (nFirstMM >= 0) {
   const c = cppPops[nFirstMM], j = jsPops[nFirstMM];
-  report.push(`first divergent pop[${nFirstMM}]: cpp(n=${c.n} cut=${c.cut} thr_bits=${c.thr_bits} wc=${c.wc}) js(n=${j.clusterSize} cut=${j.cut} thr_bits=0x${bits(j.threshold).toString(16).padStart(16,'0')} wc=${j.wellConnected})`);
+  const jPreBits = (j.preLog != null && !Number.isNaN(j.preLog)) ? "0x"+bits(j.preLog).toString(16).padStart(16,'0') : "NaN";
+  const jLogBits = (j.logN  != null && !Number.isNaN(j.logN))  ? "0x"+bits(j.logN ).toString(16).padStart(16,'0') : "NaN";
+  report.push(`first divergent pop[${nFirstMM}]: cpp(n=${c.n} cut=${c.cut} pre_log_bits=${c.pre_log_bits ?? "NA"} log_n_bits=${c.log_n_bits ?? "NA"} thr_bits=${c.thr_bits} wc=${c.wc}) js(n=${j.clusterSize} cut=${j.cut} pre_log_bits=${jPreBits} log_n_bits=${jLogBits} thr_bits=0x${bits(j.threshold).toString(16).padStart(16,'0')} wc=${j.wellConnected})`);
   pass = false;
 }
 if (cppPops.length !== jsPops.length) {

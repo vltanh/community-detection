@@ -27,7 +27,7 @@ PAR="${PARALLEL:-4}"
 
 mkdir -p "$OUT"
 : > "$OUT/cells.csv"
-echo "fixture,n,seed,partition,K,criterion,pops,records,thr_bit_mm,cluster_mm,cut_mm,wc_mm,in_mm,out_mm,survivors,survivors_mm,status" > "$OUT/cells.csv"
+echo "fixture,n,seed,partition,K,criterion,pops,records,pre_log_mm,log_n_mm,thr_bit_mm,cluster_mm,cut_mm,wc_mm,in_mm,out_mm,survivors,survivors_mm,status" > "$OUT/cells.csv"
 
 # Fixture inventory: name | edge_csv | n_hint
 FIXTURES=(
@@ -96,20 +96,20 @@ run_cell() {
   local check_log="${prefix}.check"
 
   if [ ! -f "$path" ]; then
-    echo "${name},${n_hint},${seed},${pseed},,${criterion},,,,,,,,,,,FIX_MISSING" >> "$OUT/cells.csv"
+    echo "${name},${n_hint},${seed},${pseed},,${criterion},,,,,,,,,,,,,FIX_MISSING" >> "$OUT/cells.csv"
     return
   fi
 
   local k_str
   k_str=$(synth_com "$path" "$com" "$pseed" 2>/dev/null) || {
-    echo "${name},${n_hint},${seed},${pseed},,${criterion},,,,,,,,,,,SYNTH_FAIL" >> "$OUT/cells.csv"
+    echo "${name},${n_hint},${seed},${pseed},,${criterion},,,,,,,,,,,,,SYNTH_FAIL" >> "$OUT/cells.csv"
     return
   }
   local K=${k_str#K=}
 
   if ! timeout 120 "$TR_SWAP" "$path" "$com" "$out_swap" "$criterion" cactus "$seed" \
        > "$json_swap" 2> "$err_swap"; then
-    echo "${name},${n_hint},${seed},${pseed},${K},${criterion},,,,,,,,,,,TRACER_FAIL" >> "$OUT/cells.csv"
+    echo "${name},${n_hint},${seed},${pseed},${K},${criterion},,,,,,,,,,,,,TRACER_FAIL" >> "$OUT/cells.csv"
     rm -f "$com" "$out_swap" "$json_swap"
     return
   fi
@@ -124,6 +124,8 @@ run_cell() {
   local survivors=$(grep -m1 'canonical:' "$check_log" | grep -oE 'survivors=[0-9]+' | cut -d= -f2)
   local per_pop=$(grep -m1 '^per-pop:' "$check_log")
   local thr_mm=$(grep -oE 'thr_bit_mm=[0-9]+' <<<"$per_pop" | head -1 | cut -d= -f2)
+  local pre_log_mm=$(grep -oE 'pre_log_mm=[0-9]+' <<<"$per_pop" | head -1 | cut -d= -f2)
+  local log_n_mm=$(grep -oE 'log_n_mm=[0-9]+' <<<"$per_pop" | head -1 | cut -d= -f2)
   local cluster_mm=$(grep -oE 'cluster_mm=[0-9]+' <<<"$per_pop" | head -1 | cut -d= -f2)
   local cut_mm=$(grep -oE 'cut_mm=[0-9]+' <<<"$per_pop" | head -1 | cut -d= -f2)
   local wc_mm=$(grep -oE 'wc_mm=[0-9]+' <<<"$per_pop" | head -1 | cut -d= -f2)
@@ -141,15 +143,20 @@ run_cell() {
   local status=PASS
   # IO_MM_ONLY: bipartition flips on equal-cost ties (chained VieCut row J);
   # survivors + cut + thr + wc all bit-equal.
+  # Row E (FP composition order): pre_log_mm OR log_n_mm > 0 means a sub-term
+  # of the threshold product diverged at sub-ulp level — count as FAIL_HARD
+  # (audit row E principle: localize sub-term drift even when final product
+  # may coincidentally still match).
   if [ "${cluster_mm:-0}" -gt 0 ] || [ "${cut_mm:-0}" -gt 0 ] \
      || [ "${wc_mm:-0}" -gt 0 ] || [ "${thr_mm:-0}" -gt 0 ] \
+     || [ "${pre_log_mm:-0}" -gt 0 ] || [ "${log_n_mm:-0}" -gt 0 ] \
      || [ "$surv_mm" -gt 0 ] || [ "$pop_count_mm" -gt 0 ]; then
     status=FAIL_HARD
   elif [ "${in_mm:-0}" -gt 0 ] || [ "${out_mm:-0}" -gt 0 ]; then
     status=IO_MM_ONLY
   fi
 
-  echo "${name},${n_hint},${seed},${pseed},${K},${criterion},${pops},${records},${thr_mm:-NA},${cluster_mm:-NA},${cut_mm:-NA},${wc_mm:-NA},${in_mm:-NA},${out_mm:-NA},${survivors:-NA},${surv_mm},${status}" >> "$OUT/cells.csv"
+  echo "${name},${n_hint},${seed},${pseed},${K},${criterion},${pops},${records},${pre_log_mm:-NA},${log_n_mm:-NA},${thr_mm:-NA},${cluster_mm:-NA},${cut_mm:-NA},${wc_mm:-NA},${in_mm:-NA},${out_mm:-NA},${survivors:-NA},${surv_mm},${status}" >> "$OUT/cells.csv"
 
   if [ "$status" = "PASS" ] || [ "$status" = "IO_MM_ONLY" ]; then
     rm -f "$com" "$out_swap" "$json_swap" "$err_swap"
@@ -188,8 +195,8 @@ printf '%s\n' "${JOBS[@]}" \
 echo ""
 echo "=== WCC stress matrix summary ==="
 awk -F, 'NR>1 {
-  status[$17]++;
-  if ($17=="PASS" || $17=="IO_MM_ONLY") records += $8;
+  status[$19]++;
+  if ($19=="PASS" || $19=="IO_MM_ONLY") records += $8;
 }
 END {
   printf "Cells:\n";

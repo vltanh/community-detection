@@ -23,13 +23,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
 if (args.length < 3) {
   console.error("usage: self_rng_check.mjs <cpp_trace.json> <edge.csv> <com.csv> "
-              + "[criterion] [resolution] [seed]");
+              + "[criterion] [resolution] [seed] [algorithm]");
   process.exit(2);
 }
 const [cppPath, edgePath, comPath,
        criterion = "1log_10(n)",
        resolution = 0.0001,
-       seed = 0] = args;
+       seed = 0,
+       algorithm = "leiden-cpm"] = args;
 
 const cpp = JSON.parse(fs.readFileSync(cppPath, "utf8"));
 if (cpp.build !== "TRACER_MODE") {
@@ -105,7 +106,7 @@ const fixture = { nodes: G.nodes, edges: G.edges, gt: Array.from(G.membership) }
 const r = COMDET.CM.runCM(G.membership, {
   fixture,
   criterion,
-  algorithm: "leiden-cpm",
+  algorithm,
   resolution: parseFloat(resolution),
   seed: parseInt(seed, 10) >>> 0,
 });

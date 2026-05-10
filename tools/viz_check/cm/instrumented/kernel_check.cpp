@@ -63,6 +63,7 @@
 #include <igraph.h>
 #include <libleidenalg/GraphHelper.h>
 #include <libleidenalg/CPMVertexPartition.h>
+#include <libleidenalg/ModularityVertexPartition.h>
 #include <libleidenalg/Optimiser.h>
 #include "tracer_io.h"
 
@@ -150,13 +151,15 @@ struct InlinedMinCut {
     }
 };
 
-// [UPSTREAM cm.h:12-39] RunClusterOnPartition (leiden-cpm only)
-// + [UPSTREAM constrained.h:301-324] RunLeidenAndUpdatePartition.
-// Leiden side stays canonical: per Leiden audit row A-M, JS Leiden L4 closed
-// bit-equal under canonical libleidenalg + igraph_rng. No TRACER_MODE swap
-// needed on Leiden side.
+// [UPSTREAM cm.h:12-39] RunClusterOnPartition + [UPSTREAM constrained.h:301-324,
+// 335-391] RunLeidenAndUpdatePartition / GetCommunities. Base algorithm
+// dispatch mirrors `constrained.h:335-391`: "leiden-cpm" -> CPMVertexPartition,
+// "leiden-mod" -> ModularityVertexPartition. Leiden side stays canonical: per
+// Leiden audit row A-M, JS Leiden L4 closed bit-equal under canonical
+// libleidenalg + igraph_rng. No TRACER_MODE swap needed on Leiden side.
 static std::vector<std::vector<int>>
-RunClusterOnPartition(const igraph_t* graph, double resolution, int seed,
+RunClusterOnPartition(const igraph_t* graph, const std::string& algorithm,
+                      double resolution, int seed,
                       std::vector<int>& partition,
                       std::vector<int>* dbg_first_membership = nullptr) {
     std::vector<std::vector<int>> cluster_vectors;
@@ -168,18 +171,41 @@ RunClusterOnPartition(const igraph_t* graph, double resolution, int seed,
     igraph_induced_subgraph_map(graph, &sub, igraph_vss_vector(&keep),
                                 IGRAPH_SUBGRAPH_CREATE_FROM_SCRATCH, NULL, &idmap);
     Graph leiden_graph(&sub);
-    CPMVertexPartition lpart(&leiden_graph, resolution);
+    // [UPSTREAM constrained.h:335-391] GetCommunities branches on algorithm
+    // string. JS port at vltanh.github.io/comdet/js/cm/cm.js:87-89 mirrors:
+    //   "leiden-cpm" -> CPMVertexPartition(resolution)
+    //   "leiden-mod" / "louvain" -> ModularityVertexPartition (resolution ignored)
+    MutableVertexPartition* lpart = nullptr;
+    if (algorithm == "leiden-cpm") {
+        lpart = new CPMVertexPartition(&leiden_graph, resolution);
+    } else if (algorithm == "leiden-mod") {
+        lpart = new ModularityVertexPartition(&leiden_graph);
+    } else {
+        fprintf(stderr, "[TRACE-CM] unknown algorithm '%s'\n", algorithm.c_str());
+        std::abort();
+    }
     std::map<int,int> partition_map;
     Optimiser o;
-    o.set_rng_seed(seed);
-    for (int i = 0; i < 2; i++) o.optimise_partition(&lpart);
+    // [UPSTREAM constrained.h:359] canonical loops num_iter=2 on ONE
+    // Optimiser instance (RNG continues across iter 2). JS production
+    // walker (vltanh.github.io/comdet/js/cm/cm.js:runBaseAlgo) calls
+    // optimisePartition TWICE with RNG RE-SEEDED on each call, threading
+    // iter 1's partition into iter 2 via opts.initialMembership. To stay
+    // byte-equal vs JS, the tracer re-seeds the Optimiser between iters.
+    // SANCTIONED tracer divergence from unmodified canonical (per
+    // layered-canonical flag — three claims #2 = FALSE under canonical
+    // continue-RNG vs tracer re-seed-RNG). Trajectory same modulo this.
+    for (int i = 0; i < 2; i++) {
+        o.set_rng_seed(seed);
+        o.optimise_partition(lpart);
+    }
     igraph_eit_t eit; igraph_eit_create(&sub, igraph_ess_all(IGRAPH_EDGEORDER_ID), &eit);
     std::set<int> visited;
     for (; !IGRAPH_EIT_END(eit); IGRAPH_EIT_NEXT(eit)) {
         igraph_integer_t e = IGRAPH_EIT_GET(eit);
         int from = IGRAPH_FROM(&sub, e), to = IGRAPH_TO(&sub, e);
-        if (!visited.contains(from)) { visited.insert(from); partition_map[from] = lpart.membership(from); }
-        if (!visited.contains(to)) { visited.insert(to); partition_map[to] = lpart.membership(to); }
+        if (!visited.contains(from)) { visited.insert(from); partition_map[from] = lpart->membership(from); }
+        if (!visited.contains(to)) { visited.insert(to); partition_map[to] = lpart->membership(to); }
     }
     igraph_eit_destroy(&eit);
     if (dbg_first_membership) {
@@ -196,6 +222,7 @@ RunClusterOnPartition(const igraph_t* graph, double resolution, int seed,
         for (int newid : c) tr.push_back(VECTOR(idmap)[newid]);
         cluster_vectors.push_back(std::move(tr));
     }
+    delete lpart;
     igraph_vector_int_destroy(&keep);
     igraph_vector_int_destroy(&idmap);
     igraph_destroy(&sub);
@@ -221,7 +248,8 @@ struct PopRecord {
 int main(int argc, char** argv) {
     if (argc < 4) {
         std::fprintf(stderr, "usage: %s <edge.csv> <com.csv> <out.csv> "
-                             "[criterion] [resolution] [seed]\n", argv[0]);
+                             "[criterion] [resolution] [seed] [algorithm]\n",
+                             argv[0]);
         return 2;
     }
     std::string edge_csv = argv[1];
@@ -230,9 +258,13 @@ int main(int argc, char** argv) {
     std::string criterion = (argc >= 5) ? argv[4] : "1log_10(n)";
     double resolution = (argc >= 6) ? std::stod(argv[5]) : 0.0001;
     int seed = (argc >= 7) ? std::atoi(argv[6]) : 0;
+    // [UPSTREAM constrained.h:335-391] GetCommunities algorithm string.
+    // Default "leiden-cpm" preserves the legacy 6-fixture stress matrix.
+    // "leiden-mod" enables Leiden-Modularity base method (no resolution).
+    std::string algorithm = (argc >= 8) ? argv[7] : "leiden-cpm";
 
-    fprintf(stderr, "[TRACE-CM] PIPELINE_START build=%s edge=%s com=%s\n",
-            k_build_mode, edge_csv.c_str(), com_csv.c_str());
+    fprintf(stderr, "[TRACE-CM] PIPELINE_START build=%s edge=%s com=%s algorithm=%s\n",
+            k_build_mode, edge_csv.c_str(), com_csv.c_str(), algorithm.c_str());
 
     // Parse Clog_x(n).
     double C = 1.0, x = 10.0;
@@ -364,7 +396,7 @@ int main(int argc, char** argv) {
                     auto& side = sides[side_idx];
                     if (side.size() <= 1) continue;
                     std::vector<int> dbg_mem;
-                    auto subclusters = RunClusterOnPartition(&sub, resolution, seed, side, &dbg_mem);
+                    auto subclusters = RunClusterOnPartition(&sub, algorithm, resolution, seed, side, &dbg_mem);
                     if (side_idx == 0) rec.in_leiden_membership = dbg_mem;
                     else rec.out_leiden_membership = dbg_mem;
                     fprintf(stderr, "[TRACE-CM]     RECLUSTER side=%s size=%zu -> %zu sub\n",

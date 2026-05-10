@@ -7,19 +7,29 @@
  For more information, see <http://www.mapequation.org>
  ******************************************************************************/
 
-// Force the forked plogp definition (Math.LOG2E-form) to win the
-// One-Definition-Rule ahead of canonical's std::log2-based plogp.
-// The forked header sets the same INFOMATH_H_ guard so MapEquation.h
-// + InfomapOptimizer.h's own #include of "../utils/infomath.h" become
-// no-ops; every plogp call inlined into our compilation unit reduces
-// to `p * (std::log(p) * LOG2E)`, matching JS's plogp bit-for-bit.
+// infomath_traced.h: forked infomath.h with compile-time mode toggle
+// (skill §"Compile-time tracer-mode toggle"). Resolves plogp at build
+// time:
+//   -DCANONICAL_MODE -> p * std::log2(p); build-pair test (a) verifies
+//                       this binary == unmodified Infomap byte-for-byte
+//                       under matching seed.
+//   -DTRACER_MODE    -> p * jsmath::jsLog2(p), where jsLog2 = fdlibm
+//                       __ieee754_log * LOG2E with the log2(1)=0 special
+//                       case enforced. Produces V8-Math.log-equivalent
+//                       bits so the JS production walker cross-checks
+//                       against this binary bit-for-bit (verification
+//                       target; JS conforms to this swapped tracer, not
+//                       the other way around).
+// Shares INFOMATH_H_ guard with canonical so the transitive #include of
+// "../utils/infomath.h" from MapEquation.h / InfomapOptimizer.h becomes
+// a no-op and every plogp call site picks up the toggled definition.
 #include "infomath_traced.h"
-// Same trick for MapEquation.h: hijack MAPEQUATION_H_ guard so
-// MemMapEquation.h / BiasedMapEquation.h / MetaMapEquation.h's
-// transitive #include of "MapEquation.h" picks up our forked version
-// instead of the canonical. The fork replaces the running enterFlow
-// accumulator with a sum-from-scratch, eliminating 1 ULP drift vs
-// JS replay over multi-hundred-move trajectories.
+// map_equation_traced.h: byte-identical to canonical MapEquation.h;
+// kept as a no-op forwarder for include-path symmetry with the
+// infomath_traced.h pattern. Shares MAPEQUATION_H_ guard so the
+// transitive #include from MemMapEquation.h / BiasedMapEquation.h /
+// MetaMapEquation.h resolves to this copy. No semantic divergence
+// from canonical.
 #include "map_equation_traced.h"
 
 #include "InfomapBase.h"

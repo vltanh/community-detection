@@ -19,6 +19,55 @@ static bool _ld_lg_enabled() {
   }
   return v != 0;
 }
+
+// [TRACE-LD-CAND] / [TRACE-LD-MV] / [TRACE-LD-CACHE] probe gate.
+// Set LEIDEN_DUMP_PROBES=1 to enable per-candidate, per-move_node-admin,
+// and per-cache_neigh_communities accumulator emissions. Silent by default
+// so the 3-tier stress harness is unaffected. Probes mirror canonical
+// `#ifdef DEBUG` blocks in libleidenalg/src/{Optimiser,MutableVertexPartition,
+// CPMVertexPartition,ModularityVertexPartition}.cpp, routed to stderr with
+// `[TRACE-LD-*]` prefixes for grep-able diff vs JS-side mirror prints.
+bool _ld_probes_enabled() {
+  static int v = -1;
+  if (v < 0) {
+    const char* s = std::getenv("LEIDEN_DUMP_PROBES");
+    v = (s && s[0] == '1') ? 1 : 0;
+  }
+  return v != 0;
+}
+// Bit-exact double emission (hex) for accumulator probes.
+static void _ld_emit_hex(double x) {
+  unsigned long long u;
+  std::memcpy(&u, &x, 8);
+  fprintf(stderr, "%016llx", u);
+}
+
+// [TRACE-LD-SHUFFLE] per-step Fisher-Yates probe wrapper. Closes P0 #10
+// (GraphHelper.cpp:37 per-shuffle step `get_random_int(0, idx, rng)`
+// return) + lemire-mapping per-call (P0 #11) via the `range` field
+// (range = idx + 1, return value is the bounded draw — the only two
+// scalars cross-side reproducible without editing vendored igraph).
+// Calls get_random_int directly (same path as canonical shuffle) so
+// the RNG stream is byte-identical to the unwrapped shuffle. The cpp
+// `shuffle()` from GraphHelper.cpp is bypassed only when probes are
+// enabled; production stress passes still call the canonical shuffle.
+static void _ld_traced_shuffle(std::vector<size_t>& v, igraph_rng_t* rng,
+                               const char* site_tag) {
+  size_t n = v.size();
+  if (n > 0) {
+    for (size_t idx = n - 1; idx > 0; idx--) {
+      size_t rand_idx = get_random_int(0, idx, rng);
+      if (_ld_probes_enabled()) {
+        // range = idx + 1 (igraph_rng_get_integer maps to inclusive bound).
+        fprintf(stderr, "[TRACE-LD-SHUFFLE] site=%s idx=%zu range=%zu rand_idx=%zu\n",
+                site_tag, idx, idx + 1, rand_idx);
+      }
+      size_t tmp = v[idx];
+      v[idx] = v[rand_idx];
+      v[rand_idx] = tmp;
+    }
+  }
+}
 static void _ld_lg_emit_hex(double x) {
   unsigned long long u;
   std::memcpy(&u, &x, 8);
@@ -421,9 +470,29 @@ double Optimiser::optimise_partition(vector<MutableVertexPartition*> partitions,
         break;
       }
     }
+    // [TRACE-LD-AGG] Closes P0 #18. Decomposed aggregate_further short-
+    // circuit: emit the three input scalars + final value BEFORE the
+    // composite `&&` is applied. cpp:425-426 / Optimiser.cpp ~283-295.
+    bool _ld_any_unfixed = aggregate_further;
+    bool _ld_new_lt_old = (new_collapsed_graphs[0]->vcount() < collapsed_graphs[0]->vcount());
+    bool _ld_old_gt_ncomm = (collapsed_graphs[0]->vcount() > collapsed_partitions[0]->n_communities());
+    if (_ld_probes_enabled()) {
+      fprintf(stderr, "[TRACE-LD-AGG] level=%zu any_unfixed=%d new_vcount=%zu old_vcount=%zu n_comms=%zu new_lt_old=%d old_gt_ncomm=%d\n",
+              _ld_lg_level_idx,
+              _ld_any_unfixed ? 1 : 0,
+              new_collapsed_graphs[0]->vcount(),
+              collapsed_graphs[0]->vcount(),
+              collapsed_partitions[0]->n_communities(),
+              _ld_new_lt_old ? 1 : 0,
+              _ld_old_gt_ncomm ? 1 : 0);
+    }
     // else, check whether anything has stirred since last time
     aggregate_further &= (new_collapsed_graphs[0]->vcount() < collapsed_graphs[0]->vcount()) &&
                          (collapsed_graphs[0]->vcount() > collapsed_partitions[0]->n_communities());
+    if (_ld_probes_enabled()) {
+      fprintf(stderr, "[TRACE-LD-AGG] level=%zu final=%d\n",
+              _ld_lg_level_idx, aggregate_further ? 1 : 0);
+    }
 
     #ifdef DEBUG
       cerr << "Aggregate further " << aggregate_further << endl;
@@ -672,7 +741,8 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
     if (!is_membership_fixed[v])
       nodes.push_back(v);
   }
-  shuffle(nodes, &rng);
+  if (_ld_probes_enabled()) _ld_traced_shuffle(nodes, &rng, "move");
+  else                      shuffle(nodes, &rng);
   // [TRACE-LD] Capture per-pass init: phase, level, queue, pre_membership.
   gTrace.passes.push_back({});
   size_t pass_idx = gTrace.passes.size() - 1;
@@ -760,6 +830,21 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
       }
     }
 
+    // [TRACE-LD-BRANCH] per-visit which consider_comms path was taken.
+    // Closes P0 #20 (audit row F): branch silently visible only via
+    // observed candidate count; emit decoded name + n_post_consider so
+    // empty-comm gate flip vs n_unchanged is unambiguous.
+    if (_ld_probes_enabled()) {
+      const char* cc_tag =
+        (consider_comms == ALL_COMMS) ? "ALL_COMMS" :
+        (consider_comms == ALL_NEIGH_COMMS) ? "ALL_NEIGH_COMMS" :
+        (consider_comms == RAND_COMM) ? "RAND_COMM" :
+        (consider_comms == RAND_NEIGH_COMM) ? "RAND_NEIGH_COMM" : "UNKNOWN";
+      fprintf(stderr, "[TRACE-LD-BRANCH] pass=%zu visit=%zu v=%zu vcomm=%zu consider_comms=%s n_after_cc=%zu cnodes_vcomm=%zu\n",
+              pass_idx, gTrace.passes[pass_idx].moves.size(), v, v_comm,
+              cc_tag, comms.size(), partitions[0]->cnodes(v_comm));
+    }
+
     // Check if we should move to an empty community
     if (consider_empty_community)
     {
@@ -771,6 +856,16 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
           cerr << "Checking empty community (" << comm << ") for partition " << partitions[0] << endl;
         #endif
         comms.push_back(comm);
+        // [TRACE-LD-EMPTYGATE] consider_empty branch taken. Closes P0 #17
+        // (add_empty_community use-site result) + part of #20 (empty-comm
+        // gate branch). Emits pre/post n_communities + the empty id used.
+        if (_ld_probes_enabled()) {
+          fprintf(stderr, "[TRACE-LD-EMPTYGATE] site=move pass=%zu visit=%zu v=%zu vcomm=%zu cnodes_vcomm=%zu n_comms_pre=%zu empty_id=%zu n_comms_post=%zu grew=%d\n",
+                  pass_idx, gTrace.passes[pass_idx].moves.size(), v, v_comm,
+                  partitions[0]->cnodes(v_comm), n_comms, comm,
+                  partitions[0]->n_communities(),
+                  (partitions[0]->n_communities() > n_comms) ? 1 : 0);
+        }
         if (partitions[0]->n_communities() > n_comms)
         {
           // If the empty community has just been added, we need to make sure
@@ -778,6 +873,12 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
           for (size_t layer = 1; layer < nb_layers; layer++)
               partitions[layer]->add_empty_community();
           comm_added.push_back(true);
+        }
+      } else {
+        if (_ld_probes_enabled()) {
+          fprintf(stderr, "[TRACE-LD-EMPTYGATE] site=move pass=%zu visit=%zu v=%zu vcomm=%zu cnodes_vcomm=%zu skipped=1\n",
+                  pass_idx, gTrace.passes[pass_idx].moves.size(), v, v_comm,
+                  partitions[0]->cnodes(v_comm));
         }
       }
     }
@@ -796,8 +897,25 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
     }
 
     size_t max_comm = v_comm;
-    double max_improv = (0 < max_comm_size && max_comm_size < partitions[0]->csize(v_comm)) ? -INFINITY : 10*DBL_EPSILON;
+    bool _ld_max_comm_size_guard = (0 < max_comm_size && max_comm_size < partitions[0]->csize(v_comm));
+    double max_improv = _ld_max_comm_size_guard ? -INFINITY : 10*DBL_EPSILON;
     double v_size = graphs[0]->node_size(v);
+    // [TRACE-LD-CAND] Closes audit row H + row J + row F: dump full
+    // candidate list pre-loop (Optimiser.cpp:701-789) + per-candidate
+    // `possible_improv` (Optimiser.cpp:817) + running `max_improv` at
+    // every `>` test (Optimiser.cpp:820) + initial-value branch tag
+    // (Optimiser.cpp:799 max_improv branch — P0 #15).
+    if (_ld_probes_enabled()) {
+      const char* mi_branch = _ld_max_comm_size_guard ? "NEG_INF" : "10EPS";
+      fprintf(stderr, "[TRACE-LD-CAND] CANDS pass=%zu visit=%zu v=%zu vcomm=%zu ncands=%zu max_improv_branch=%s max_improv_init=",
+              pass_idx, gTrace.passes[pass_idx].moves.size(), v, v_comm, comms.size(), mi_branch);
+      _ld_emit_hex(max_improv);
+      fprintf(stderr, " cands=");
+      for (size_t i = 0; i < comms.size(); i++) {
+        fprintf(stderr, "%s%zu", i ? "," : "", comms[i]);
+      }
+      fprintf(stderr, "\n");
+    }
     for (size_t comm : comms)
     {
       // reset comm_added to all false
@@ -805,6 +923,10 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
 
       // Do not create too-large communities.
       if (0 < max_comm_size && max_comm_size < partitions[0]->csize(comm) + v_size) {
+        if (_ld_probes_enabled()) {
+          fprintf(stderr, "[TRACE-LD-CAND] SKIP pass=%zu visit=%zu v=%zu comm=%zu reason=max_comm_size\n",
+                  pass_idx, gTrace.passes[pass_idx].moves.size(), v, comm);
+        }
         continue;
       }
 
@@ -814,10 +936,34 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
       for (size_t layer = 0; layer < nb_layers; layer++)
       {
         // Make sure to multiply it by the weight per layer
-        possible_improv += layer_weights[layer]*partitions[layer]->diff_move(v, comm);
+        double dm = partitions[layer]->diff_move(v, comm);
+        // [TRACE-LD-CAND] Per-layer diff_move return (Optimiser.cpp:817).
+        // Single-layer default so layer=0 is the only emission, but keep
+        // the loop probe for forward-compatibility with multiplex layers.
+        if (_ld_probes_enabled()) {
+          fprintf(stderr, "[TRACE-LD-CAND] DIFF pass=%zu visit=%zu v=%zu comm=%zu layer=%zu lw=",
+                  pass_idx, gTrace.passes[pass_idx].moves.size(), v, comm, layer);
+          _ld_emit_hex(layer_weights[layer]);
+          fprintf(stderr, " diff_move=");
+          _ld_emit_hex(dm);
+          fprintf(stderr, "\n");
+        }
+        possible_improv += layer_weights[layer]*dm;
       }
 
-      if (possible_improv > max_improv)
+      // [TRACE-LD-CAND] PRE-COMPARE: possible_improv + running max_improv
+      // at the moment of the `>` test (Optimiser.cpp:820). Closes audit
+      // row J — every tie-break decision visible.
+      bool accepts = (possible_improv > max_improv);
+      if (_ld_probes_enabled()) {
+        fprintf(stderr, "[TRACE-LD-CAND] COMP pass=%zu visit=%zu v=%zu comm=%zu pimprov=",
+                pass_idx, gTrace.passes[pass_idx].moves.size(), v, comm);
+        _ld_emit_hex(possible_improv);
+        fprintf(stderr, " max_improv=");
+        _ld_emit_hex(max_improv);
+        fprintf(stderr, " accepts=%d\n", accepts ? 1 : 0);
+      }
+      if (accepts)
       {
         max_comm = comm;
         max_improv = possible_improv;
@@ -894,7 +1040,22 @@ double Optimiser::move_nodes(vector<MutableVertexPartition*> partitions, vector<
             // If the neighbour was stable and is not in the new community, we
             // should mark it as unstable, and add it to the queue, skipping
             // fixed nodes
-            if (is_node_stable[u] && partitions[0]->membership(u) != max_comm && !is_membership_fixed[u])
+            bool _ld_was_stable = is_node_stable[u];
+            bool _ld_in_new = (partitions[0]->membership(u) == max_comm);
+            bool _ld_fixed = is_membership_fixed[u];
+            bool _ld_push = _ld_was_stable && !_ld_in_new && !_ld_fixed;
+            // [TRACE-LD-RESTAB] Closes P0 #16. Per-neighbour decision tuple:
+            // `(u, is_node_stable[u], membership[u], pushed_to_queue)`.
+            // RNG-independent but queue-extension order matters for sub-
+            // visit RNG draws downstream. cpp:889-903 / Optimiser.cpp ~720.
+            if (_ld_probes_enabled()) {
+              fprintf(stderr, "[TRACE-LD-RESTAB] pass=%zu visit=%zu v=%zu u=%zu was_stable=%d in_new=%d fixed=%d pushed=%d u_comm=%zu\n",
+                      pass_idx, gTrace.passes[pass_idx].moves.size(), v, u,
+                      _ld_was_stable ? 1 : 0, _ld_in_new ? 1 : 0,
+                      _ld_fixed ? 1 : 0, _ld_push ? 1 : 0,
+                      partitions[0]->membership(u));
+            }
+            if (_ld_push)
             {
               vertex_order.push_back(u);
               is_node_stable[u] = false;
@@ -988,7 +1149,8 @@ double Optimiser::merge_nodes(vector<MutableVertexPartition*> partitions, vector
       vertex_order.push_back(v);
 
   // But if we use a random order, we shuffle this order.
-  shuffle(vertex_order, &rng);
+  if (_ld_probes_enabled()) _ld_traced_shuffle(vertex_order, &rng, "merge");
+  else                      shuffle(vertex_order, &rng);
 
   vector<bool> comm_added(partitions[0]->n_communities(), false);
   vector<size_t> comms;
@@ -1200,7 +1362,8 @@ double Optimiser::move_nodes_constrained(vector<MutableVertexPartition*> partiti
   vector<bool> is_node_stable(n, false);
   // But if we use a random order, we shuffle this order.
   vector<size_t> nodes = range(n);
-  shuffle(nodes, &rng);
+  if (_ld_probes_enabled()) _ld_traced_shuffle(nodes, &rng, "move_constrained");
+  else                      shuffle(nodes, &rng);
   deque<size_t> vertex_order(nodes.begin(), nodes.end());
 
   vector< vector<size_t> > constrained_comms = constrained_partition->get_communities();
@@ -1443,7 +1606,8 @@ double Optimiser::merge_nodes_constrained(vector<MutableVertexPartition*> partit
 
 
   // But if we use a random order, we shuffle this order.
-  shuffle(vertex_order, &rng);
+  if (_ld_probes_enabled()) _ld_traced_shuffle(vertex_order, &rng, "merge_constrained");
+  else                      shuffle(vertex_order, &rng);
 
   // [TRACE-LD] Capture refine pass init: phase=1, level, queue, pre_membership.
   gTrace.passes.push_back({});
@@ -1549,8 +1713,25 @@ double Optimiser::merge_nodes_constrained(vector<MutableVertexPartition*> partit
       #endif
 
       size_t max_comm = v_comm;
-      double max_improv = (0 < max_comm_size && max_comm_size < partitions[0]->csize(v_comm)) ? -INFINITY : 0;
+      bool _ld_max_comm_size_guard_r = (0 < max_comm_size && max_comm_size < partitions[0]->csize(v_comm));
+      double max_improv = _ld_max_comm_size_guard_r ? -INFINITY : 0;
       double v_size = graphs[0]->node_size(v);
+      // [TRACE-LD-CAND] Refine path candidate list + per-cand `possible_improv`.
+      // Mirrors merge_nodes_constrained (Optimiser.cpp:1374-1378). Same
+      // probe shape as move_nodes site so the JS-side mirror diffs without
+      // branching on phase. max_improv_branch=NEG_INF|ZERO mirrors P0 #15
+      // (refine initial threshold differs from move: 0 not 10*EPS).
+      if (_ld_probes_enabled()) {
+        const char* mi_branch_r = _ld_max_comm_size_guard_r ? "NEG_INF" : "ZERO";
+        fprintf(stderr, "[TRACE-LD-CAND] CANDS pass=%zu visit=%zu v=%zu vcomm=%zu ncands=%zu max_improv_branch=%s max_improv_init=",
+                pass_idx_refine, gTrace.passes[pass_idx_refine].moves.size(), v, v_comm, comms.size(), mi_branch_r);
+        _ld_emit_hex(max_improv);
+        fprintf(stderr, " cands=");
+        for (size_t i = 0; i < comms.size(); i++) {
+          fprintf(stderr, "%s%zu", i ? "," : "", comms[i]);
+        }
+        fprintf(stderr, "\n");
+      }
       for (size_t comm : comms)
       {
         // reset comm_added to all false
@@ -1558,6 +1739,10 @@ double Optimiser::merge_nodes_constrained(vector<MutableVertexPartition*> partit
 
         // Do not create too-large communities.
         if (0 < max_comm_size && max_comm_size < partitions[0]->csize(comm) + v_size) {
+          if (_ld_probes_enabled()) {
+            fprintf(stderr, "[TRACE-LD-CAND] SKIP pass=%zu visit=%zu v=%zu comm=%zu reason=max_comm_size\n",
+                    pass_idx_refine, gTrace.passes[pass_idx_refine].moves.size(), v, comm);
+          }
           continue;
         }
 
@@ -1567,10 +1752,29 @@ double Optimiser::merge_nodes_constrained(vector<MutableVertexPartition*> partit
         for (size_t layer = 0; layer < nb_layers; layer++)
         {
           // Make sure to multiply it by the weight per layer
-          possible_improv += layer_weights[layer]*partitions[layer]->diff_move(v, comm);
+          double dm = partitions[layer]->diff_move(v, comm);
+          if (_ld_probes_enabled()) {
+            fprintf(stderr, "[TRACE-LD-CAND] DIFF pass=%zu visit=%zu v=%zu comm=%zu layer=%zu lw=",
+                    pass_idx_refine, gTrace.passes[pass_idx_refine].moves.size(), v, comm, layer);
+            _ld_emit_hex(layer_weights[layer]);
+            fprintf(stderr, " diff_move=");
+            _ld_emit_hex(dm);
+            fprintf(stderr, "\n");
+          }
+          possible_improv += layer_weights[layer]*dm;
         }
 
-        if (possible_improv >= max_improv)
+        // [TRACE-LD-CAND] PRE-COMPARE: refine uses `>=` (Optimiser.cpp:1374).
+        bool accepts = (possible_improv >= max_improv);
+        if (_ld_probes_enabled()) {
+          fprintf(stderr, "[TRACE-LD-CAND] COMP pass=%zu visit=%zu v=%zu comm=%zu pimprov=",
+                  pass_idx_refine, gTrace.passes[pass_idx_refine].moves.size(), v, comm);
+          _ld_emit_hex(possible_improv);
+          fprintf(stderr, " max_improv=");
+          _ld_emit_hex(max_improv);
+          fprintf(stderr, " accepts=%d\n", accepts ? 1 : 0);
+        }
+        if (accepts)
         {
           max_comm = comm;
           max_improv = possible_improv;

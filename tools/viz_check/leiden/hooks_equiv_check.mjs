@@ -16,6 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 globalThis.window = globalThis;
 globalThis.window.COMDET = { FIXTURE: { nodes: [], edges: [], gt: [] } };
 const WEB = path.join(__dirname, "../../../../../web/vltanh.github.io/comdet/js");
+await import(path.join(WEB, "common/common.js"));
 await import(path.join(WEB, "louvain/louvain.js"));
 await import(path.join(WEB, "leiden/leiden.js"));
 
@@ -86,7 +87,7 @@ const _bview = new BigUint64Array(_bbuf.buffer);
 function bits(x) { _bbuf[0] = x; return _bview[0]; }
 
 function run(opts) {
-  const G = COMDET.LOUVAIN.Graph(n, edges, { correctSelfLoops: false, sortAdj: true });
+  const G = COMDET.COMMON.Graph(n, edges, { correctSelfLoops: false, sortAdj: true });
   const out = COMDET.LEIDEN.optimisePartition(G, canonCPM(0.01), SEED, opts);
   const mem = Array.from(out.partition.membership());
   return { Q: out.quality, mem };

@@ -40,6 +40,7 @@ const cpp = JSON.parse(fs.readFileSync(cppPath, "utf8"));
 globalThis.window = globalThis;
 globalThis.window.COMDET = { FIXTURE: { nodes: [], edges: [], gt: [] } };
 const WEB = path.join(__dirname, "../../../../../web/vltanh.github.io/comdet/js");
+await import(path.join(WEB, "common/common.js"));
 await import(path.join(WEB, "louvain/louvain.js"));
 await import(path.join(WEB, "leiden/leiden.js"));
 
@@ -63,7 +64,7 @@ const renum = cpp.renum_to_orig;
 const n = renum.length;
 const edges = loadEdges(edgePath, renum);
 
-const G = COMDET.LOUVAIN.Graph(n, edges, { correctSelfLoops: false });
+const G = COMDET.COMMON.Graph(n, edges, { correctSelfLoops: false });
 
 // libleidenalg-shape CPM: bypass JS LEIDEN.CPM's halved-quality
 // convention; compute diff_move and quality byte-for-byte per
@@ -252,7 +253,10 @@ for (let pi = 0; pi < topPasses.length; pi++) {
   let target = P;
   if (phase === "refine") {
     // Singleton init over same graph; canonCPM scoring identical.
-    target = COMDET.LOUVAIN.Partition(G, null, qfn);
+    // Use LeidenPartition (libleidenalg-shape admin) so canonCPM's
+    // weightToComm + csize lookups resolve. Louvain Partition exposes
+    // modIn/modTot only.
+    target = COMDET.LEIDEN.Partition(G, null, qfn);
   } else if (p.pre_membership && p.pre_membership.length === n) {
     // Sync main P to canonical's exact pre-pass state. This absorbs
     // multi-level back-projection between top-level move passes that

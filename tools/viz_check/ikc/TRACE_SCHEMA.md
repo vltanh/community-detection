@@ -38,11 +38,29 @@ Contract between canonical-tracer (Python instrumented fork of `run_ikc.py`) and
   "components": [<component>, ...],               // canonical iteration order = NetworKit getComponents()
   "nodes_to_remove_sorted": [<int>, ...],         // ASC; union of all peeled nodes this iter
   "kept_clusters_this_iter": <int>,
+  "bail_L": <int> | null,                         // G8: full-graph edge count L echoed at bail iter; null on non-bail
+  "bail_per_node_modularity": [<bail_node>, ...], // G8: per-node FP primitive on bail path (run_ikc.py:118-120); [] on non-bail
   "terminated": null | "max_k_below_floor" | "subgraph_none"
 }
 ```
 
 After this iter, residual is recompacted in old-compact-id-ascending order; next iter's `residual_compact_ids_sorted` starts at 0..n-1 of the new compaction.
+
+### Per-bail-node record (G8)
+
+```jsonc
+{
+  "compact_id": <int>,                            // current-residual compact id at bail
+  "orig_compact_id": <int>,                       // pre-recompaction (orig_graph) compact id
+  "d": <int>,                                     // orig_graph.degree(orig_compact_id) — directed out-degree (NetworKit semantics)
+  "two_L": <int>,                                 // 2 * L (full original edge count)
+  "ratio": <float>,                               // d / two_L (Python `/`, IEEE-754 double)
+  "ratio_squared": <float>,                       // ratio ** 2 (Python `**` with exponent 2; equals ratio*ratio byte-for-byte)
+  "neg_ratio_squared": <float>                    // (-1) * ratio_squared (sign flip; bit pattern = ratio_squared XOR sign bit)
+}
+```
+
+Only emitted on the bail iter (`terminated == "max_k_below_floor"`). Mirrors canonical's `run_ikc.py:118-120` exactly: one entry per `graph.iterNodes()` of the residual at bail time, in ASC-compact-id order. Even though every entry gets appended to `final_clusters` as a size-1 singleton (and gets filtered by `print_clusters`), the FP scalar IS computed in the shipped binary and feeds `len(final_clusters)` = `n_final_clusters_pre_singleton_filter`. Audit row D for IKC is N/A only on the dead-modularity-gate path; the bail path is live FP.
 
 ## Per-component record
 
@@ -54,12 +72,33 @@ After this iter, residual is recompacted in old-compact-id-ascending order; next
   "members_sorted": [<int>, ...],                 // ASC; for set-equality fallback in diff
   "k_valid": <bool>,
   "k_valid_failing_compact_id": <int> | null,     // first node whose intra-kcore degree < kFloor; null if k_valid==true
+  "k_valid_loop_scope": [<kv_scope_node>, ...],   // G2: every kcore-subgraph node in subgraph.iterNodes() ASC order
   "modular_value": 1.0,                           // dead-gate constant; canonical run_ikc.py:280
   "modular_pos": <bool>,                          // (modular > 0); always true under canonicalGate
   "kept": <bool>,                                 // (k_valid && modular_pos)
-  "fate_reason": "accepted" | "failed k-valid" | "failed modularity"
+  "fate_reason": "accepted" | "failed k-valid" | "failed modularity",
+  "nodes_to_remove_after_update_sorted": [<int>, ...]  // G9: accumulator state after this component's update(component)
 }
 ```
+
+### Per-k_valid-loop-scope-node record (G2)
+
+```jsonc
+{
+  "subgraph_id": <int>,                           // residual-compact id (= kcore subgraph id since subgraphFromNodes preserves ids)
+  "in_component": <bool>,                         // node ∈ component_nodes set
+  "degIn": <int>,                                 // subgraph.degreeIn(node) — directed in-degree within kcore subgraph
+  "degOut": <int>,                                // subgraph.degreeOut(node)
+  "sum": <int>,                                   // degIn + degOut (the canonical k_valid threshold input)
+  "check_result": "skipped" | "ok" | "fail" | "post_break_unvisited"
+}
+```
+
+Iteration order = ASC by `subgraph_id` (canonical `subgraph.iterNodes()` returns ASC; JS scans kcoreMask 0..remCount-1 with kcoreMask set). `check_result`:
+- `"skipped"`: not in component (canonical's `if node in component_nodes:` gate is false).
+- `"ok"`: in component, sum >= kFloor, continue.
+- `"fail"`: in component, sum < kFloor — short-circuits canonical's `break` at run_ikc.py:276. First such node = `k_valid_failing_compact_id`.
+- `"post_break_unvisited"`: after the canonical break fires, the loop terminates; the tracer still records subsequent subgraph nodes for trace-scope visibility (full G2 loop-scope dump) but tags them as not actually visited by canonical.
 
 ## Final record
 
@@ -80,6 +119,14 @@ After this iter, residual is recompacted in old-compact-id-ascending order; next
 ## Determinism
 
 IKC has no RNG. `iters[]` and `final` are determined by `(node_id_map, edges, k_floor)` alone. Two runs with identical input produce byte-equal trace.
+
+## P0 probe inventory (closed 2026-05-10)
+
+| Probe | Tag | JSON field(s) | Source line | Notes |
+|---|---|---|---|---|
+| G2 (k_valid loop scope + per-node degree) | `[TRACE-IKC-KV]` (stderr) | `components[].k_valid_loop_scope[]` | `run_ikc.py:266-277` | Exposes canonical's full `subgraph.iterNodes()` scope, not just the lex-BFS visit list. Per-node `degIn`/`degOut`/`sum` + `check_result` (skipped/ok/fail/post_break_unvisited). |
+| G8 (bail-iter `(d/(2L))²` FP primitive) | `[TRACE-IKC-BAIL]` (stderr) | `iters[].bail_L`, `iters[].bail_per_node_modularity[]` | `run_ikc.py:118-120` | Live FP on bail path. Per-node `d`, `two_L`, `ratio`, `ratio_squared`, `neg_ratio_squared`. JS uses `ratio*ratio` (byte-equal to Python `**2` for exponent 2). |
+| G9 (`nodes_to_remove` mutation order) | `[TRACE-IKC-NTR]` (stderr) | `components[].nodes_to_remove_after_update_sorted` (per-component accumulator snapshot) | `run_ikc.py:131, 151, 160, 165, 193` | The set hash-iteration order at removal site (`run_ikc.py:193`) is implementation-defined and NOT bit-compared in JSON; stderr-only via `[TRACE-IKC-NTR] removal_iter_order=...`. The per-component sorted-accumulator snapshot IS in JSON; mutation sequence visible across `comp_idx` 0,1,2,... |
 
 ## Contract notes
 

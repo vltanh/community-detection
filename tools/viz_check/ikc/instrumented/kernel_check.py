@@ -130,17 +130,46 @@ def k_valid(component, subgraph, k):
 
     Iterates subgraph.iterNodes() (whole kcore subgraph) and only
     inspects nodes that are in the component set; bails on first
-    intra-subgraph degree < k. Returns (ok, failing_node) where
-    failing_node is None on success.
+    intra-subgraph degree < k. Returns (ok, failing_node, loop_scope)
+    where failing_node is None on success and loop_scope is the
+    full per-iteration trace (G2 probe: every subgraph node visited
+    in iteration order with in_component + degIn + degOut + sum +
+    check_result, regardless of short-circuit).
     """
     component_nodes = set(component)
+    loop_scope = []  # G2: every subgraph.iterNodes() visit
+    ok = True
+    failing = None
     for node in subgraph.iterNodes():
-        if node in component_nodes:
-            din = subgraph.degreeIn(node)
-            dout = subgraph.degreeOut(node)
-            if (din + dout) < k:
-                return False, node
-    return True, None
+        in_comp = node in component_nodes
+        din = subgraph.degreeIn(node)
+        dout = subgraph.degreeOut(node)
+        s = din + dout
+        if not in_comp:
+            check_result = "skipped"
+        elif ok:
+            if s < k:
+                check_result = "fail"
+                ok = False
+                failing = node
+            else:
+                check_result = "ok"
+        else:
+            # Past the short-circuit: canonical's `break` (run_ikc.py:276)
+            # stops iteration entirely; we still record the node + degrees
+            # but tag as "post_break_unvisited" so the trace exposes the
+            # full subgraph.iterNodes() scope (G2 audit row F) without
+            # asserting canonical visited it.
+            check_result = "post_break_unvisited"
+        loop_scope.append({
+            "subgraph_id": int(node),
+            "in_component": bool(in_comp),
+            "degIn": int(din),
+            "degOut": int(dout),
+            "sum": int(s),
+            "check_result": check_result,
+        })
+    return ok, failing, loop_scope
 
 
 def modular(component, orig_graph, inverted_orig):
@@ -248,15 +277,44 @@ def ikc_traced(graph, k_floor, inverted_orig, node_id_map_records):
                 "components": [],
                 "nodes_to_remove_sorted": [],
                 "kept_clusters_this_iter": 0,
+                "bail_L": None,
+                "bail_per_node_modularity": [],
                 "terminated": "subgraph_none",
             })
             break
 
         if max_k < k_floor:
             trace_log(f"  TERMINATE: max_k_below_floor (max_k={max_k} < k_floor={k_floor})")
+            # G8: bail-iter (d/(2L))² FP primitive (run_ikc.py:118-120).
+            # Live FP on this path. Trace per-node: original-id, degree
+            # (orig_graph.degree = NetworKit directed out-degree), L, the
+            # ratio d/(2L), its square, and the negated value appended to
+            # final_clusters. Iteration order = graph.iterNodes() (ASC by
+            # current compact id).
+            bail_per_node_modularity = []
+            two_L = 2 * L
             for node in graph.iterNodes():
-                modu = (-1) * (orig_graph.degree(inverted_orig[node]) / (2 * L)) ** 2
-                final_clusters.append(([inverted_orig[node]], 0, modu))
+                orig_node = inverted_orig[node]
+                d = orig_graph.degree(orig_node)
+                ratio = d / two_L if two_L != 0 else 0.0
+                ratio_sq = ratio ** 2
+                modu = (-1) * ratio_sq
+                final_clusters.append(([orig_node], 0, modu))
+                rec = {
+                    "compact_id": int(node),
+                    "orig_compact_id": int(orig_node),
+                    "d": int(d),
+                    "two_L": int(two_L),
+                    "ratio": float(ratio),
+                    "ratio_squared": float(ratio_sq),
+                    "neg_ratio_squared": float(modu),
+                }
+                bail_per_node_modularity.append(rec)
+                trace_log(
+                    f"    [TRACE-IKC-BAIL] compact={node} orig={orig_node} "
+                    f"d={d} 2L={two_L} ratio={ratio!r} sq={ratio_sq!r} "
+                    f"neg_sq={modu!r}"
+                )
             for node in singletons:
                 final_clusters.append(([node], 0, 0))
             iters.append({
@@ -272,6 +330,8 @@ def ikc_traced(graph, k_floor, inverted_orig, node_id_map_records):
                 "components": [],
                 "nodes_to_remove_sorted": [],
                 "kept_clusters_this_iter": 0,
+                "bail_L": int(L),
+                "bail_per_node_modularity": bail_per_node_modularity,
                 "terminated": "max_k_below_floor",
             })
             break
@@ -309,17 +369,22 @@ def ikc_traced(graph, k_floor, inverted_orig, node_id_map_records):
                 f"members_iter_order={members_iter_order}"
             )
 
-            # k-validity (run_ikc.py:142). Iterates subgraph nodes
-            # not just component nodes — record per-node
-            # intra-kcore-subgraph degree for tracing.
-            for nid in members_iter_order:
-                din = sub_kc.degreeIn(nid)
-                dout = sub_kc.degreeOut(nid)
+            # G2: k-validity loop scope (run_ikc.py:266-277). Canonical
+            # iterates subgraph.iterNodes() (every kcore-subgraph node in
+            # compact-ASC order) and inspects only those in the component;
+            # short-circuits on first failing component-node. The per-node
+            # records below expose the loop's true scope + iteration order
+            # + skip/check/fail decisions, separately from members_iter_order
+            # (which is lex-BFS over component nodes only).
+            ok, failing, k_valid_loop_scope = k_valid(component, sub_kc, k_floor)
+            for rec in k_valid_loop_scope:
                 trace_log(
-                    f"    kvalid_check nid={nid} degIn={din} degOut={dout} "
-                    f"sum={din+dout} vs_kfloor={k_floor}"
+                    f"    [TRACE-IKC-KV] subgraph_id={rec['subgraph_id']} "
+                    f"in_comp={rec['in_component']} "
+                    f"degIn={rec['degIn']} degOut={rec['degOut']} "
+                    f"sum={rec['sum']} vs_kfloor={k_floor} "
+                    f"check={rec['check_result']}"
                 )
-            ok, failing = k_valid(component, sub_kc, k_floor)
 
             modu_value = 1.0  # dead-gate constant; mirror run_ikc.py:280
             modu_pos = (modu_value > 0)
@@ -367,6 +432,19 @@ def ikc_traced(graph, k_floor, inverted_orig, node_id_map_records):
                     f"    FAIL: k-valid (first failing compact_id={failing})"
                 )
 
+            # G9: nodes_to_remove accumulator state after this component's
+            # `update(component)` (run_ikc.py:131, 151, 160, 165). The per-
+            # component mutation order is invisible at iter_end; this field
+            # captures the accumulator's sorted membership after each
+            # component closes its branch (every branch path updates the
+            # set — including the accepted path's :165 update at canonical).
+            nodes_to_remove_after_update_sorted = sorted(int(n) for n in nodes_to_remove)
+            trace_log(
+                f"    [TRACE-IKC-NTR] comp_idx={comp_idx} fate={fate_reason} "
+                f"ntr_size_after={len(nodes_to_remove_after_update_sorted)} "
+                f"component_compact_ids={sorted(int(n) for n in component)}"
+            )
+
             comp_records.append({
                 "comp_idx": comp_idx,
                 "comp_n": comp_n,
@@ -374,10 +452,13 @@ def ikc_traced(graph, k_floor, inverted_orig, node_id_map_records):
                 "members_sorted": members_sorted,
                 "k_valid": bool(ok),
                 "k_valid_failing_compact_id": (None if ok else int(failing)),
+                "k_valid_loop_scope": k_valid_loop_scope,
                 "modular_value": float(modu_value),
                 "modular_pos": bool(modu_pos),
                 "kept": bool(kept),
                 "fate_reason": fate_reason,
+                "nodes_to_remove_after_update_sorted":
+                    nodes_to_remove_after_update_sorted,
             })
 
         nodes_to_remove_sorted = sorted(int(n) for n in nodes_to_remove)
@@ -385,6 +466,24 @@ def ikc_traced(graph, k_floor, inverted_orig, node_id_map_records):
         trace_log(
             f"  nodes_to_remove_sorted={nodes_to_remove_sorted} "
             f"kept_clusters_this_iter={kept_clusters_this_iter}"
+        )
+
+        # G9: capture the actual set-iteration order at the removal site
+        # (run_ikc.py:193). Python set iteration order is hash-order,
+        # implementation-defined; NetworKit's getContinuousNodeIds
+        # reassigns by old-compact-id-ASC so the removal call order does
+        # NOT affect downstream compaction. Emit as STDERR-only trace
+        # (not JSON) since Python's set hash-order and JS's lex-BFS
+        # array order are fundamentally divergent by design — the
+        # invariant being audited is that the resulting multiset is
+        # equal (already covered by nodes_to_remove_sorted) AND that
+        # the downstream recompaction is order-independent. The probe
+        # exposes the order so a future regression in the recompaction
+        # invariant would be diagnosable.
+        nodes_to_remove_removal_iter_order = [int(n) for n in nodes_to_remove]
+        trace_log(
+            f"  [TRACE-IKC-NTR] removal_iter_order="
+            f"{nodes_to_remove_removal_iter_order}"
         )
 
         iters.append({
@@ -400,6 +499,8 @@ def ikc_traced(graph, k_floor, inverted_orig, node_id_map_records):
             "components": comp_records,
             "nodes_to_remove_sorted": nodes_to_remove_sorted,
             "kept_clusters_this_iter": kept_clusters_this_iter,
+            "bail_L": None,
+            "bail_per_node_modularity": [],
             "terminated": None,
         })
 

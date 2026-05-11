@@ -186,6 +186,11 @@ function reshapeJsTrace(events) {
     } else if (ev.event === "component") {
       const r = getIter(ev.payload.iter);
       r.components.push(ev.payload);
+    } else if (ev.event === "bail_per_node_modularity") {
+      // G8: bail-iter (d/(2L))² FP primitive payload. Lifted onto the
+      // same iter record so reshape merges it with iter_start/max_k/iter_end.
+      const r = getIter(ev.payload.iter);
+      r.bail = ev.payload;
     } else if (ev.event === "iter_end") {
       const r = getIter(ev.payload.iter);
       r.iter_end = ev.payload;
@@ -212,6 +217,7 @@ function reshapeJsTrace(events) {
       }
       return copy;
     });
+    const bail = r.bail || {};
     return {
       iter: idx,
       residual_n_before: start.residual_n_before,
@@ -225,6 +231,10 @@ function reshapeJsTrace(events) {
       components: comps,
       nodes_to_remove_sorted: end.nodes_to_remove_sorted,
       kept_clusters_this_iter: end.kept_clusters_this_iter,
+      // G8: bail-iter FP primitive fields. null + [] on non-bail iters
+      // (canonical-tracer emits the same default so shapes match).
+      bail_L: bail.bail_L != null ? bail.bail_L : null,
+      bail_per_node_modularity: bail.bail_per_node_modularity || [],
       terminated: end.terminated == null ? null : end.terminated,
     };
   });

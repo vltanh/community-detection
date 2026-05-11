@@ -168,6 +168,59 @@ class random_functions {
         return v;
     }
 
+    // libstdc++ uniform_int_distribution via floor-rejection scaling,
+    // routed through traced next(). Mirror of JS uniformIntViaNext.
+    static uint32_t uniform_int_via_next(uint32_t lo, uint32_t hi) {
+        uint32_t r = hi - lo + 1u;
+        if (r == 0) return (next() + lo);
+        if (r == 1) return lo;
+        uint64_t U = 4294967296ull;  // 2^32
+        uint64_t scaling = U / (uint64_t)r;
+        uint64_t past = scaling * (uint64_t)r;
+        while (true) {
+            uint64_t ret = (uint64_t)next();
+            if (ret < past) return (uint32_t)(lo + (uint32_t)(ret / scaling));
+        }
+    }
+
+    // libstdc++ std::shuffle optimized branch (bits/stl_algo.h:3719-3792).
+    // Routes all uint32 draws through next() so each draw emits [TRACE-RNG]
+    // in the same order the JS port consumes them.
+    template <typename T>
+    static void shuffle_range_traced(std::vector<T>& vec, size_t lo,
+                                     size_t hi) {
+        if (hi - lo < 2) return;
+        size_t urange = hi - lo;
+        size_t i = lo + 1;
+        if ((urange & 1u) == 0) {
+            uint32_t pos = uniform_int_via_next(0, 1);
+            std::swap(vec[i], vec[lo + pos]);
+            i++;
+        }
+        while (i < hi) {
+            uint32_t swap_range = (uint32_t)((i - lo) + 1);
+            uint32_t hi2 = swap_range * (swap_range + 1) - 1;
+            uint32_t x = uniform_int_via_next(0, hi2);
+            uint32_t pp_first = x / (swap_range + 1);
+            uint32_t pp_second = x % (swap_range + 1);
+            std::swap(vec[i], vec[lo + pp_first]);
+            i++;
+            std::swap(vec[i], vec[lo + pp_second]);
+            i++;
+        }
+    }
+
+    template <typename T>
+    static void permutate_vector_local_traced(std::vector<T>* v, bool init) {
+        std::vector<T>& vec = *v;
+        if (init) for (unsigned int i = 0; i < vec.size(); i++) vec[i] = (T)i;
+        size_t localsize = 128;
+        for (size_t i = 0; i < vec.size(); i += localsize) {
+            size_t end = std::min(vec.size(), i + localsize);
+            shuffle_range_traced(vec, i, end);
+        }
+    }
+
     static MersenneTwister getRand() { return m_mt; }
 
     static void setSeed(int seed) {

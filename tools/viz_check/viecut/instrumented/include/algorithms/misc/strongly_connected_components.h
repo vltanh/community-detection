@@ -98,43 +98,84 @@ class strongly_connected_components {
         m_dfsnum[node] = m_dfscount++;
         m_unfinished.push(node);
         m_roots.push(node);
+        std::fprintf(stderr,
+            "[TRACE-SCC-S] root_push node:%u dfsnum:%d unfinished_n:%zu "
+            "roots_n:%zu\n",
+            node, m_dfsnum[node], m_unfinished.size(), m_roots.size());
 
         while (!iteration_stack.empty()) {
             NodeID current_node = iteration_stack.top().first;
             EdgeID current_edge = iteration_stack.top().second;
             iteration_stack.pop();
+            std::fprintf(stderr,
+                "[TRACE-SCC-S] frame current:%u current_edge:%lu "
+                "stack_n:%zu\n",
+                current_node, (unsigned long)current_edge,
+                iteration_stack.size());
 
+            bool recursed = false;
             for (EdgeID e : G->edges_of_starting_at(current_node,
                                                     current_edge)) {
+                FlowType ef;
+                FlowType ew = static_cast<FlowType>(
+                    G->getEdgeWeight(current_node, e));
                 if (m_fpid == UNDEFINED_NODE) {
-                    if (G->getEdgeFlow(current_node, e)
-                        == static_cast<FlowType>(
-                            G->getEdgeWeight(current_node, e))) {
-                        continue;
-                    }
+                    ef = G->getEdgeFlow(current_node, e);
                 } else {
-                    if (G->getEdgeFlow(current_node, e, m_fpid) ==
-                        static_cast<FlowType>(
-                            G->getEdgeWeight(current_node, e))) {
-                        continue;
-                    }
+                    ef = G->getEdgeFlow(current_node, e, m_fpid);
+                }
+                bool full = (ef == ew);
+                if (full) {
+                    std::fprintf(stderr,
+                        "[TRACE-SCC-S] edge current:%u e:%lu skip:full "
+                        "ef:%ld ew:%ld\n",
+                        current_node, (unsigned long)e,
+                        (long)ef, (long)ew);
+                    continue;
                 }
                 NodeID target = G->getEdgeTarget(current_node, e);
-                if (m_dfsnum[target] == -1) {
+                int dfsnum_t = m_dfsnum[target];
+                int comp_t = m_comp_num[target];
+                std::fprintf(stderr,
+                    "[TRACE-SCC-S] edge current:%u e:%lu target:%u "
+                    "dfsnum_t:%d comp_t:%d\n",
+                    current_node, (unsigned long)e, target,
+                    dfsnum_t, comp_t);
+                if (dfsnum_t == -1) {
                     iteration_stack.push(std::pair<NodeID, EdgeID>(
                                              current_node, e));
                     iteration_stack.push(std::pair<NodeID, EdgeID>(target, 0));
                     m_dfsnum[target] = m_dfscount++;
                     m_unfinished.push(target);
                     m_roots.push(target);
+                    std::fprintf(stderr,
+                        "[TRACE-SCC-S] descend target:%u new_dfsnum:%d "
+                        "stack_n:%zu unfinished_n:%zu roots_n:%zu\n",
+                        target, m_dfsnum[target],
+                        iteration_stack.size(), m_unfinished.size(),
+                        m_roots.size());
+                    recursed = true;
                     break;
-                } else if (m_comp_num[target] == -1) {
-                    while (m_dfsnum[m_roots.top()] > m_dfsnum[target])
+                } else if (comp_t == -1) {
+                    size_t pops = 0;
+                    while (m_dfsnum[m_roots.top()] > m_dfsnum[target]) {
                         m_roots.pop();
+                        pops++;
+                    }
+                    std::fprintf(stderr,
+                        "[TRACE-SCC-S] back_edge target:%u pops:%zu "
+                        "roots_top_after:%u\n",
+                        target, pops,
+                        m_roots.empty() ? 0xffffffffu : m_roots.top());
                 }
             }
+            (void)recursed;
 
-            if (current_node == m_roots.top()) {
+            bool root_match = (current_node == m_roots.top());
+            std::fprintf(stderr,
+                "[TRACE-SCC-S] root_check current:%u roots_top:%u match:%d\n",
+                current_node, m_roots.top(), (int)root_match);
+            if (root_match) {
                 NodeID w = 0;
                 m_blocksizes.emplace_back();
                 do {
@@ -142,9 +183,16 @@ class strongly_connected_components {
                     m_unfinished.pop();
                     m_comp_num[w] = m_comp_count;
                     m_blocksizes[m_comp_count]++;
+                    std::fprintf(stderr,
+                        "[TRACE-SCC-S] commit w:%u comp:%zu blocksize:%zu\n",
+                        w, m_comp_count, m_blocksizes[m_comp_count]);
                 } while (w != current_node);
                 m_comp_count++;
                 m_roots.pop();
+                std::fprintf(stderr,
+                    "[TRACE-SCC-S] comp_done count:%zu roots_n:%zu "
+                    "unfinished_n:%zu\n",
+                    m_comp_count, m_roots.size(), m_unfinished.size());
             }
         }
     }

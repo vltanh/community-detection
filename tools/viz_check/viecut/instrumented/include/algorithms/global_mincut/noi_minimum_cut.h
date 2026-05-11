@@ -84,12 +84,34 @@ class noi_minimum_cut : public minimum_cut {
         graphs.push_back(G);
         minimum_cut_helpers<GraphPtr>::setInitialCutValues(graphs);
 
+        // [TRACE-NOI] outer perform_minimum_cut entry + per-iter
+        // (noi_minimum_cut.h:61-83). Outer-while runs capforest +
+        // fromUnionFind until n<=2 or mincut==0.
+        std::fprintf(stderr,
+            "[TRACE-NOI] outer_entry G_n:%u indirect:%d initial_mincut:%lu\n",
+            G->number_of_nodes(), (int)indirect, (unsigned long)mincut);
+        int noi_iter = 0;
         while (graphs.back()->number_of_nodes() > 2 && mincut > 0) {
+            std::fprintf(stderr,
+                "[TRACE-NOI] outer_iter:%d n_before:%u mincut_before:%lu\n",
+                noi_iter, graphs.back()->number_of_nodes(),
+                (unsigned long)mincut);
             auto uf = modified_capforest(graphs.back(), mincut);
             graphs.emplace_back(
                 contraction::fromUnionFind(graphs.back(), &uf, true));
+            EdgeWeight mc_pre = mincut;
             mincut = minimum_cut_helpers<GraphPtr>::updateCut(graphs, mincut);
+            std::fprintf(stderr,
+                "[TRACE-NOI] outer_iter:%d n_after:%u uf_n:%u mincut:%lu "
+                "mincut_before:%lu\n",
+                noi_iter, graphs.back()->n(), uf.n(),
+                (unsigned long)mincut, (unsigned long)mc_pre);
+            noi_iter++;
         }
+        std::fprintf(stderr,
+            "[TRACE-NOI] outer_exit n_final:%u mincut:%lu iters:%d\n",
+            graphs.back()->number_of_nodes(),
+            (unsigned long)mincut, noi_iter);
 
         if (!indirect && configuration::getConfig()->save_cut)
             minimum_cut_helpers<GraphPtr>::retrieveMinimumCut(graphs);
@@ -152,10 +174,14 @@ class noi_minimum_cut : public minimum_cut {
         // modulus result. Raw next() is also emitted by random_functions
         // via [TRACE-RNG]; this duplicate explicit emission ties the raw
         // draw to its post-modulus node selection.
-        NodeID starting_node = random_functions::next() % G->number_of_nodes();
+        uint32_t starting_raw = random_functions::next();
+        NodeID starting_node = starting_raw % G->number_of_nodes();
         std::fprintf(stderr,
             "[TRACE-CAP] start mod_n:%u start:%u\n",
             G->number_of_nodes(), starting_node);
+        std::fprintf(stderr,
+            "[TRACE-CAP] start_raw raw:0x%08x mod_n:%u start:%u\n",
+            starting_raw, G->number_of_nodes(), starting_node);
 
         NodeID current_node = starting_node;
 

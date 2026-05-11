@@ -101,12 +101,53 @@ class recursive_cactus {
  private:
     mutableGraphPtr recursiveCactus(
         mutableGraphPtr G, size_t depth) {
+        // [TRACE-RC-W] wrapper entry+exit (recursive_cactus.h:102-111).
+        // Distinguishes wrapper frame from internal frame; emits G state
+        // BEFORE+AFTER heavy_edges.removeHeavyEdges + contractCycleEdges +
+        // reInsertCycles + reInsertVertices.
+        std::fprintf(stderr,
+            "[TRACE-RC-W] enter depth:%zu n_in:%u m_in:%lu mincut:%lu\n",
+            depth, G->n(), (unsigned long)G->m(), (unsigned long)mincut);
         heavy_edges he(mincut);
         auto cactusEdges = he.removeHeavyEdges(G);
+        std::fprintf(stderr,
+            "[TRACE-RC-W] after_removeHeavy depth:%zu n:%u m:%lu "
+            "cactusEdges_n:%zu\n",
+            depth, G->n(), (unsigned long)G->m(), cactusEdges.size());
         auto cycleEdges = he.contractCycleEdges(G);
+        std::fprintf(stderr,
+            "[TRACE-RC-W] after_contractCycle depth:%zu n:%u m:%lu "
+            "cycleEdges_n:%zu\n",
+            depth, G->n(), (unsigned long)G->m(), cycleEdges.size());
         G = internalRecursiveCactus(G, depth);
+        std::fprintf(stderr,
+            "[TRACE-RC-W] after_internal depth:%zu n:%u m:%lu\n",
+            depth, G->n(), (unsigned long)G->m());
         he.reInsertCycles(G, cycleEdges);
+        std::fprintf(stderr,
+            "[TRACE-RC-W] after_reInsertCycles depth:%zu n:%u m:%lu\n",
+            depth, G->n(), (unsigned long)G->m());
+        for (NodeID gn : G->nodes()) {
+            std::fprintf(stderr,
+                "[TRACE-RC-W]  reInsCyc_contained[%u]:", gn);
+            for (NodeID cv : G->containedVertices(gn))
+                std::fprintf(stderr, "%u,", cv);
+            std::fprintf(stderr, "\n");
+        }
         he.reInsertVertices(G, cactusEdges);
+        std::fprintf(stderr,
+            "[TRACE-RC-W] after_reInsertVerts depth:%zu n:%u m:%lu\n",
+            depth, G->n(), (unsigned long)G->m());
+        for (NodeID gn : G->nodes()) {
+            std::fprintf(stderr,
+                "[TRACE-RC-W]  reInsVtx_contained[%u]:", gn);
+            for (NodeID cv : G->containedVertices(gn))
+                std::fprintf(stderr, "%u,", cv);
+            std::fprintf(stderr, "\n");
+        }
+        std::fprintf(stderr,
+            "[TRACE-RC-W] exit depth:%zu n_out:%u m_out:%lu\n",
+            depth, G->n(), (unsigned long)G->m());
         return G;
     }
 
@@ -168,6 +209,9 @@ class recursive_cactus {
         EdgeID e = 0;
 
         std::string es = configuration::getConfig()->edge_selection;
+        std::fprintf(stderr,
+            "[TRACE-RC] edge_selection depth:%zu es:%s\n",
+            depth, es.c_str());
 
         if (es == "heavy")
             std::tie(s, e, tgt) = maximumFlowEdge(G);
@@ -185,7 +229,12 @@ class recursive_cactus {
         {
             std::vector<NodeID> vtcs = { s, tgt };
             push_relabel pr;
+            size_t pid_before = problem_id;
             problem_id++;
+            std::fprintf(stderr,
+                "[TRACE-RC] problem_id depth:%zu pid_before:%zu "
+                "pid_after:%zu\n",
+                depth, pid_before, problem_id);
             max_flow = pr.solve_max_flow_min_cut(
                 G, vtcs, 0, false, false, problem_id).first;
         }
@@ -193,44 +242,101 @@ class recursive_cactus {
             "[TRACE-RC] max_flow depth:%zu val:%ld mincut:%lu\n",
             depth, (long)max_flow, (unsigned long)mincut);
 
-        if (max_flow > (FlowType)mincut) {
+        bool mf_gt_mc = (max_flow > (FlowType)mincut);
+        std::fprintf(stderr,
+            "[TRACE-RC] mf_branch depth:%zu mf:%ld mincut:%lu gt:%d\n",
+            depth, (long)max_flow, (unsigned long)mincut, (int)mf_gt_mc);
+        if (mf_gt_mc) {
             LOG << "max flow is larger " << max_flow;
             VIECUT_ASSERT_EQ(G->getEdgeTarget(s, e), tgt);
             G->contractEdge(s, e);
+            std::fprintf(stderr,
+                "[TRACE-RC] contractEdge depth:%zu n_after:%u m_after:%lu\n",
+                depth, G->n(), (unsigned long)G->m());
             G = recursiveCactus(G, depth + 1);
             return G;
         } else {
-            if (G->number_of_nodes() == 2) {
+            bool eq_2 = (G->number_of_nodes() == 2);
+            std::fprintf(stderr,
+                "[TRACE-RC] n2_branch depth:%zu n:%u eq2:%d\n",
+                depth, G->n(), (int)eq_2);
+            if (eq_2) {
                 return G;
             }
             strongly_connected_components scc;
             auto [v, num_comp, blocksizes] =
                 scc.strong_components(G, problem_id);
-            if (num_comp == 2
-                && (G->getWeightedNodeDegree(s) == mincut
-                    || G->getWeightedNodeDegree(tgt) == mincut)) {
+            EdgeWeight deg_s = G->getWeightedNodeDegree(s);
+            EdgeWeight deg_t = G->getWeightedNodeDegree(tgt);
+            bool nc_eq_2 = (num_comp == 2);
+            bool deg_s_eq_mc = (deg_s == mincut);
+            bool deg_t_eq_mc = (deg_t == mincut);
+            bool sc_branch = nc_eq_2 && (deg_s_eq_mc || deg_t_eq_mc);
+            std::fprintf(stderr,
+                "[TRACE-RC] singleton_branch depth:%zu num_comp:%zu "
+                "nc_eq_2:%d deg_s:%lu deg_t:%lu mc:%lu deg_s_eq_mc:%d "
+                "deg_t_eq_mc:%d take:%d\n",
+                depth, num_comp, (int)nc_eq_2,
+                (unsigned long)deg_s, (unsigned long)deg_t,
+                (unsigned long)mincut, (int)deg_s_eq_mc,
+                (int)deg_t_eq_mc, (int)sc_branch);
+            if (sc_branch) {
                 std::vector<int> empty;
                 v.swap(empty);
-                NodeID ctr = (G->getWeightedNodeDegree(s) == mincut) ? s : tgt;
-                VIECUT_ASSERT_EQ(G->getWeightedNodeDegree(ctr), mincut);
+                NodeID ctr = deg_s_eq_mc ? s : tgt;
                 NodeID other = (ctr == s) ? tgt : s;
+                VIECUT_ASSERT_EQ(G->getWeightedNodeDegree(ctr), mincut);
                 auto elementsInCtr = G->containedVertices(ctr);
                 auto elementsInOther = G->containedVertices(other);
+                std::fprintf(stderr,
+                    "[TRACE-RC] singleton ctr:%u other:%u "
+                    "elemCtr_n:%zu elemOther_n:%zu elemCtr:[",
+                    ctr, other, elementsInCtr.size(), elementsInOther.size());
+                for (size_t k = 0; k < elementsInCtr.size(); ++k) {
+                    if (k) std::fprintf(stderr, ",");
+                    std::fprintf(stderr, "%u", elementsInCtr[k]);
+                }
+                std::fprintf(stderr, "] elemOther:[");
+                for (size_t k = 0; k < elementsInOther.size(); ++k) {
+                    if (k) std::fprintf(stderr, ",");
+                    std::fprintf(stderr, "%u", elementsInOther[k]);
+                }
+                std::fprintf(stderr, "]\n");
                 G->contractEdge(s, e);
+                std::fprintf(stderr,
+                    "[TRACE-RC] singleton after_contract n:%u m:%lu\n",
+                    G->n(), (unsigned long)G->m());
                 NodeID contracted_v = G->getCurrentPosition(elementsInCtr[0]);
                 G->setContainedVertices(contracted_v, elementsInOther);
+                std::fprintf(stderr,
+                    "[TRACE-RC] singleton contracted_v:%u setContained_n:%zu\n",
+                    contracted_v, elementsInOther.size());
+                size_t set_pos_idx = 0;
                 for (NodeID n : elementsInOther) {
                     G->setCurrentPosition(n, contracted_v);
+                    std::fprintf(stderr,
+                        "[TRACE-RC] singleton setCurrPos idx:%zu n:%u pos:%u\n",
+                        set_pos_idx++, n, contracted_v);
                 }
 
                 VIECUT_ASSERT_TRUE(graph_modification::isCNCR(G, mincut));
                 auto ret = recursiveCactus(G, depth + 1);
                 NodeID other_now = ret->getCurrentPosition(elementsInOther[0]);
                 NodeID new_node = ret->new_empty_node();
+                std::fprintf(stderr,
+                    "[TRACE-RC] singleton other_now:%u new_node:%u "
+                    "ret_n:%u ret_m:%lu\n",
+                    other_now, new_node, ret->n(),
+                    (unsigned long)ret->m());
                 ret->new_edge(other_now, new_node, mincut);
                 ret->setContainedVertices(new_node, elementsInCtr);
+                size_t set_pos2_idx = 0;
                 for (NodeID n : elementsInCtr) {
                     ret->setCurrentPosition(n, new_node);
+                    std::fprintf(stderr,
+                        "[TRACE-RC] singleton ctr_setCurrPos idx:%zu "
+                        "n:%u pos:%u\n",
+                        set_pos2_idx++, n, new_node);
                 }
                 return ret;
             }
@@ -238,16 +344,32 @@ class recursive_cactus {
             auto STCactus = findSTCactus(v, G, s, num_comp);
 
             double g_n = static_cast<double>(G->n());
+            std::fprintf(stderr,
+                "[TRACE-RC] block_iter_init depth:%zu num_comp:%zu g_n:%f "
+                "g_n_half:%f\n",
+                depth, num_comp, g_n, g_n / 2.0);
             // first the small blocks, last the big one. then we don't need to
             // copy graphs as the small ones are newly generated
             for (int c = 0; c < static_cast<int>(num_comp); ++c) {
-                if (static_cast<double>(blocksizes[c]) <= (g_n / 2.0)) {
+                double bs_d = static_cast<double>(blocksizes[c]);
+                bool small = (bs_d <= (g_n / 2.0));
+                std::fprintf(stderr,
+                    "[TRACE-RC] block_iter_small depth:%zu c:%d "
+                    "blocksize:%zu bs_d:%f le_half:%d\n",
+                    depth, c, blocksizes[c], bs_d, (int)small);
+                if (small) {
                     STCactus = mergeCactusWithComponent(
                         STCactus, G, depth, c, v, blocksizes[c]);
                 }
             }
             for (int c = 0; c < static_cast<int>(num_comp); ++c) {
-                if (static_cast<double>(blocksizes[c]) > (g_n / 2.0)) {
+                double bs_d = static_cast<double>(blocksizes[c]);
+                bool big = (bs_d > (g_n / 2.0));
+                std::fprintf(stderr,
+                    "[TRACE-RC] block_iter_big depth:%zu c:%d "
+                    "blocksize:%zu bs_d:%f gt_half:%d\n",
+                    depth, c, blocksizes[c], bs_d, (int)big);
+                if (big) {
                     STCactus = mergeCactusWithComponent(
                         STCactus, G, depth, c, v, blocksizes[c]);
                 }
@@ -262,11 +384,23 @@ class recursive_cactus {
         mutableGraphPtr G,
         size_t depth, int component,
         const std::vector<int>& scc_result, size_t blocksize) {
+        // [TRACE-RC-MC] entry — emit STCactus + G state + component + blocksize
+        // BEFORE any of the two arms execute (recursive_cactus.h:228-356).
+        std::fprintf(stderr,
+            "[TRACE-RC-MC] enter depth:%zu component:%d blocksize:%zu "
+            "STCactus_n:%u G_n:%u g_n_half:%f bs_le_half:%d\n",
+            depth, component, blocksize, STCactus->n(), G->n(),
+            static_cast<double>(G->n()) / 2.0,
+            (int)(static_cast<double>(blocksize)
+                  <= static_cast<double>(G->n()) / 2.0));
         NodeID uncontracted_base_vertex = UNDEFINED_NODE;
         NodeID contracted_base_vertex = UNDEFINED_NODE;
         mutableGraphPtr graph;
         if (static_cast<double>(blocksize) <=
             (static_cast<double>(G->n()) / 2.0)) {
+            std::fprintf(stderr,
+                "[TRACE-RC-MC] arm:small depth:%zu blocksize:%zu G_n:%u\n",
+                depth, blocksize, G->n());
             graph = std::make_shared<mutable_graph>();
             graph->start_construction(blocksize + 1);
             graph->setOriginalNodes(G->getOriginalNodes());
@@ -282,20 +416,32 @@ class recursive_cactus {
                 if (scc_result[n] == component) {
                     graph->new_empty_node();
                     contained.emplace_back(vtx++);
-                    if (uncontracted_base_vertex == UNDEFINED_NODE &&
-                        !G->containedVertices(n).empty()) {
+                    bool first_un = (uncontracted_base_vertex == UNDEFINED_NODE
+                                     && !G->containedVertices(n).empty());
+                    if (first_un) {
                         uncontracted_base_vertex = G->containedVertices(n)[0];
                     }
+                    std::fprintf(stderr,
+                        "[TRACE-RC-MC-N] n:%u arm:eq_comp slot:%u "
+                        "first_un:%d ubv:%u\n",
+                        n, contained.back(), (int)first_un,
+                        uncontracted_base_vertex);
                     for (NodeID con : G->containedVertices(n)) {
                         graph->addContainedVertex(contained.back(), con);
                         graph->setCurrentPosition(con, contained.back());
                     }
                 } else {
                     contained.emplace_back(blocksize);
-                    if (contracted_base_vertex == UNDEFINED_NODE &&
-                        !G->containedVertices(n).empty()) {
+                    bool first_ct = (contracted_base_vertex == UNDEFINED_NODE
+                                     && !G->containedVertices(n).empty());
+                    if (first_ct) {
                         contracted_base_vertex = G->containedVertices(n)[0];
                     }
+                    std::fprintf(stderr,
+                        "[TRACE-RC-MC-N] n:%u arm:neq_comp slot:%zu "
+                        "first_ct:%d cbv:%u\n",
+                        n, blocksize, (int)first_ct,
+                        contracted_base_vertex);
                     for (NodeID con : G->containedVertices(n)) {
                         graph->addContainedVertex(blocksize, con);
                         graph->setCurrentPosition(con, blocksize);
@@ -303,26 +449,63 @@ class recursive_cactus {
                 }
             }
 
+            // Per-edge accumulator BEFORE+AFTER (row M).
             for (NodeID n : G->nodes()) {
                 if (contained[n] != blocksize) {
                     EdgeWeight to_contracted = 0;
                     for (EdgeID e : G->edges_of(n)) {
                         NodeID t = G->getEdgeTarget(n, e);
                         EdgeWeight wgt = G->getEdgeWeight(n, e);
-                        if (contained[t] == blocksize) {
+                        EdgeWeight tc_before = to_contracted;
+                        bool t_is_blk = (contained[t] == blocksize);
+                        bool n_lt_t = (contained[n] < contained[t]);
+                        if (t_is_blk) {
                             to_contracted += wgt;
-                        } else if (contained[n] < contained[t]) {
+                            std::fprintf(stderr,
+                                "[TRACE-RC-MC-E] n:%u e:%lu t:%u wgt:%lu "
+                                "branch:to_contracted cn:%u ct:%u "
+                                "tc_before:%lu tc_after:%lu\n",
+                                n, (unsigned long)e, t,
+                                (unsigned long)wgt,
+                                contained[n], contained[t],
+                                (unsigned long)tc_before,
+                                (unsigned long)to_contracted);
+                        } else if (n_lt_t) {
                             graph->new_edge(contained[n], contained[t], wgt);
+                            std::fprintf(stderr,
+                                "[TRACE-RC-MC-E] n:%u e:%lu t:%u wgt:%lu "
+                                "branch:new_edge cn:%u ct:%u tc:%lu\n",
+                                n, (unsigned long)e, t,
+                                (unsigned long)wgt,
+                                contained[n], contained[t],
+                                (unsigned long)to_contracted);
+                        } else {
+                            std::fprintf(stderr,
+                                "[TRACE-RC-MC-E] n:%u e:%lu t:%u wgt:%lu "
+                                "branch:skip cn:%u ct:%u\n",
+                                n, (unsigned long)e, t,
+                                (unsigned long)wgt,
+                                contained[n], contained[t]);
                         }
                     }
 
-                    if (to_contracted > 0) {
+                    bool tc_gt_0 = (to_contracted > 0);
+                    if (tc_gt_0) {
                         graph->new_edge(contained[n], blocksize, to_contracted);
                     }
+                    std::fprintf(stderr,
+                        "[TRACE-RC-MC-N-DONE] n:%u tc:%lu emit_to_blk:%d\n",
+                        n, (unsigned long)to_contracted, (int)tc_gt_0);
                 }
             }
             graph->finish_construction();
+            std::fprintf(stderr,
+                "[TRACE-RC-MC] small_after_build n:%u m:%lu\n",
+                graph->n(), (unsigned long)graph->m());
         } else {
+            std::fprintf(stderr,
+                "[TRACE-RC-MC] arm:big depth:%zu blocksize:%zu G_n:%u\n",
+                depth, blocksize, G->n());
             // find a node in G that is contracted
             // and one that is not contracted,
             // use their location in contracted graphs
@@ -331,26 +514,67 @@ class recursive_cactus {
             for (size_t i = 0; i < scc_result.size(); ++i) {
                 if (scc_result[i] != component) {
                     all_ctr.insert(i);
-                    if (contracted_base_vertex == UNDEFINED_NODE &&
-                        !G->containedVertices(i).empty()) {
+                    bool first_ct = (contracted_base_vertex == UNDEFINED_NODE
+                                     && !G->containedVertices(i).empty());
+                    if (first_ct) {
                         contracted_base_vertex = G->containedVertices(i)[0];
                     }
+                    std::fprintf(stderr,
+                        "[TRACE-RC-MC-I] i:%zu arm:neq_comp insert "
+                        "all_ctr_size:%zu first_ct:%d cbv:%u\n",
+                        i, all_ctr.size(), (int)first_ct,
+                        contracted_base_vertex);
                 } else {
-                    if (uncontracted_base_vertex == UNDEFINED_NODE &&
-                        !G->containedVertices(i).empty()) {
+                    bool first_un = (uncontracted_base_vertex == UNDEFINED_NODE
+                                     && !G->containedVertices(i).empty());
+                    if (first_un) {
                         uncontracted_base_vertex = G->containedVertices(i)[0];
                     }
+                    std::fprintf(stderr,
+                        "[TRACE-RC-MC-I] i:%zu arm:eq_comp skip "
+                        "first_un:%d ubv:%u\n",
+                        i, (int)first_un, uncontracted_base_vertex);
                 }
             }
+            std::fprintf(stderr,
+                "[TRACE-RC-MC] all_ctr_dump size:%zu members:[",
+                all_ctr.size());
+            {
+                bool first = true;
+                for (const auto& v : all_ctr) {
+                    if (!first) std::fprintf(stderr, ",");
+                    first = false;
+                    std::fprintf(stderr, "%u", v);
+                }
+            }
+            std::fprintf(stderr,
+                "] G_n_before:%u G_m_before:%lu\n",
+                G->n(), (unsigned long)G->m());
             graph = G;
             graph->contractVertexSet(all_ctr);
+            std::fprintf(stderr,
+                "[TRACE-RC-MC] after_contractVertexSet n:%u m:%lu\n",
+                graph->n(), (unsigned long)graph->m());
         }
+        std::fprintf(stderr,
+            "[TRACE-RC-MC] before_recurse depth:%zu graph_n:%u m:%lu "
+            "ubv:%u cbv:%u\n",
+            depth, graph->n(), (unsigned long)graph->m(),
+            uncontracted_base_vertex, contracted_base_vertex);
         auto n_i = recursiveCactus(graph, depth + 1);
         NodeID merge_vtx_in_cactus = STCactus->getCurrentPosition(
             uncontracted_base_vertex);
         NodeID nibar = n_i->getCurrentPosition(contracted_base_vertex);
+        std::fprintf(stderr,
+            "[TRACE-RC-MC] merge_args depth:%zu STCactus_n:%u n_i_n:%u "
+            "merge_vtx:%u nibar:%u mincut:%lu\n",
+            depth, STCactus->n(), n_i->n(),
+            merge_vtx_in_cactus, nibar, (unsigned long)mincut);
         STCactus = graph_modification::mergeGraphs(
             STCactus, merge_vtx_in_cactus, n_i, nibar, mincut);
+        std::fprintf(stderr,
+            "[TRACE-RC-MC] after_merge STCactus_n:%u STCactus_m:%lu\n",
+            STCactus->n(), (unsigned long)STCactus->m());
         VIECUT_ASSERT_TRUE(graph_modification::isCNCR(STCactus, mincut));
         return STCactus;
     }
@@ -665,17 +889,26 @@ class recursive_cactus {
         exit(1);
     }
 
+    // [TRACE-RC-FE] maximumFlowEdge (recursive_cactus.h:513-545). T11/T12.
+    // Strict `>` ASC iteration; first-encountered max wins.
     std::tuple<NodeID, EdgeID, NodeID> maximumFlowEdge(
         mutableGraphPtr G) {
         NodeWeight max_degree = 0;
         NodeID s = UNDEFINED_NODE;
 
         for (NodeID n : G->nodes()) {
-            if (G->getUnweightedNodeDegree(n) > max_degree &&
-                !G->isEmpty(n)) {
-                max_degree = G->getUnweightedNodeDegree(n);
+            NodeWeight d = G->getUnweightedNodeDegree(n);
+            bool empty = G->isEmpty(n);
+            bool gt = (d > max_degree && !empty);
+            if (gt) {
+                max_degree = d;
                 s = n;
             }
+            std::fprintf(stderr,
+                "[TRACE-RC-FE] maxFE n:%u deg:%lu max_before:%lu empty:%d "
+                "gt:%d s:%u\n",
+                n, (unsigned long)d, (unsigned long)max_degree,
+                (int)empty, (int)gt, s);
         }
 
         NodeID t = UNDEFINED_NODE;
@@ -683,12 +916,20 @@ class recursive_cactus {
         NodeWeight max_ngbr = 0;
         for (EdgeID edge : G->edges_of(s)) {
             NodeID ngbr = G->getEdgeTarget(s, edge);
-            if (G->getUnweightedNodeDegree(ngbr) > max_ngbr &&
-                !G->isEmpty(ngbr)) {
-                max_ngbr = G->getUnweightedNodeDegree(ngbr);
+            NodeWeight d = G->getUnweightedNodeDegree(ngbr);
+            bool empty = G->isEmpty(ngbr);
+            bool gt = (d > max_ngbr && !empty);
+            if (gt) {
+                max_ngbr = d;
                 t = ngbr;
                 e = edge;
             }
+            std::fprintf(stderr,
+                "[TRACE-RC-FE] maxFE_ngbr s:%u edge:%lu ngbr:%u deg:%lu "
+                "max_before:%lu empty:%d gt:%d t:%u e:%lu\n",
+                s, (unsigned long)edge, ngbr, (unsigned long)d,
+                (unsigned long)max_ngbr, (int)empty, (int)gt,
+                t, (unsigned long)e);
         }
 
         if (t == UNDEFINED_NODE) {
@@ -699,17 +940,26 @@ class recursive_cactus {
         }
     }
 
+    // [TRACE-RC-WFE] maximumWeightedFlowEdge (recursive_cactus.h:547-579).
+    // T13/T14.
     std::tuple<NodeID, EdgeID, NodeID> maximumWeightedFlowEdge(
         mutableGraphPtr G) {
         NodeWeight max_degree = 0;
         NodeID s = UNDEFINED_NODE;
 
         for (NodeID n : G->nodes()) {
-            if (G->getWeightedNodeDegree(n) > max_degree &&
-                !G->isEmpty(n)) {
-                max_degree = G->getWeightedNodeDegree(n);
+            NodeWeight d = G->getWeightedNodeDegree(n);
+            bool empty = G->isEmpty(n);
+            bool gt = (d > max_degree && !empty);
+            if (gt) {
+                max_degree = d;
                 s = n;
             }
+            std::fprintf(stderr,
+                "[TRACE-RC-WFE] maxWFE n:%u wdeg:%lu max_before:%lu "
+                "empty:%d gt:%d s:%u\n",
+                n, (unsigned long)d, (unsigned long)max_degree,
+                (int)empty, (int)gt, s);
         }
 
         NodeID t = UNDEFINED_NODE;
@@ -717,12 +967,20 @@ class recursive_cactus {
         NodeWeight max_ngbr = 0;
         for (EdgeID edge : G->edges_of(s)) {
             NodeID ngbr = G->getEdgeTarget(s, edge);
-            if (G->getWeightedNodeDegree(ngbr) > max_ngbr &&
-                !G->isEmpty(ngbr)) {
-                max_ngbr = G->getWeightedNodeDegree(ngbr);
+            NodeWeight d = G->getWeightedNodeDegree(ngbr);
+            bool empty = G->isEmpty(ngbr);
+            bool gt = (d > max_ngbr && !empty);
+            if (gt) {
+                max_ngbr = d;
                 t = ngbr;
                 e = edge;
             }
+            std::fprintf(stderr,
+                "[TRACE-RC-WFE] maxWFE_ngbr s:%u edge:%lu ngbr:%u "
+                "wdeg:%lu max_before:%lu empty:%d gt:%d t:%u e:%lu\n",
+                s, (unsigned long)edge, ngbr, (unsigned long)d,
+                (unsigned long)max_ngbr, (int)empty, (int)gt,
+                t, (unsigned long)e);
         }
 
         if (t == UNDEFINED_NODE) {
@@ -733,15 +991,25 @@ class recursive_cactus {
         }
     }
 
+    // [TRACE-RC-FFE] findFlowEdge (recursive_cactus.h:583-614). Per-step
+    // edge-search decision; cpp RNG draws emitted via [TRACE-RNG] in
+    // random_functions::nextInt.
     std::tuple<NodeID, EdgeID, NodeID> findFlowEdge(
         mutableGraphPtr G) {
         NodeID s = random_functions::nextInt(0, G->n() - 1);
         NodeID tgt = 0;
         NodeID max_edge = G->get_first_invalid_edge(s) - 1;
         EdgeID e = random_functions::nextInt(0, max_edge);
+        std::fprintf(stderr,
+            "[TRACE-RC-FFE] entry s:%u max_edge:%u e:%lu G_n:%u\n",
+            s, max_edge, (unsigned long)e, G->n());
         bool edge_found = false;
+        size_t step = 0;
         while (!edge_found) {
             while (G->isEmpty(s)) {
+                std::fprintf(stderr,
+                    "[TRACE-RC-FFE] step:%zu skip_empty_s s:%u\n",
+                    step, s);
                 if (s + 1 >= G->n()) {
                     s = 0;
                 } else {
@@ -754,7 +1022,13 @@ class recursive_cactus {
                 e++;
             }
 
-            if (e < G->get_first_invalid_edge(s)) {
+            bool fie_ok = (e < G->get_first_invalid_edge(s));
+            std::fprintf(stderr,
+                "[TRACE-RC-FFE] step:%zu s:%u e:%lu fie:%lu found:%d\n",
+                step, s, (unsigned long)e,
+                (unsigned long)G->get_first_invalid_edge(s),
+                (int)fie_ok);
+            if (fie_ok) {
                 edge_found = true;
             } else {
                 if (s + 1 >= G->n()) {
@@ -763,9 +1037,13 @@ class recursive_cactus {
                     s++;
                 }
             }
+            step++;
         }
 
         tgt = G->getEdgeTarget(s, e);
+        std::fprintf(stderr,
+            "[TRACE-RC-FFE] exit s:%u e:%lu tgt:%u\n",
+            s, (unsigned long)e, tgt);
         return std::make_tuple(s, e, tgt);
     }
 

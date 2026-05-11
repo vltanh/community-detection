@@ -40,7 +40,12 @@ class most_balanced_minimum_cut {
 
         std::vector<std::pair<NodeID, EdgeID> > originalBestcutEdges;
 
-        if (mincut == 0) {
+        // T27: mincut == 0 short-circuit (most_balanced_minimum_cut.h:42-46).
+        bool mc_eq_0 = (mincut == 0);
+        std::fprintf(stderr,
+            "[TRACE-MB] mincut_zero_check mincut:%lu eq0:%d\n",
+            (unsigned long)mincut, (int)mc_eq_0);
+        if (mc_eq_0) {
             LOG1 << "G has multiple connected components and mincut is 0.";
             return originalBestcutEdges;
         }
@@ -105,20 +110,33 @@ class most_balanced_minimum_cut {
             std::fprintf(stderr, "\n");
             for (EdgeID e : G->edges_of(top)) {
                 NodeID t = G->getEdgeTarget(top, e);
-                if (!checked[t]) {
+                bool ck = checked[t];
+                std::fprintf(stderr,
+                    "[TRACE-MB-BFE] top:%u e:%lu t:%u checked_before:%d "
+                    "push:%d\n",
+                    top, (unsigned long)e, t, (int)ck, (int)(!ck));
+                if (!ck) {
                     q.push(t);
                     checked[t] = true;
                 }
             }
         }
 
+        // T29 final edge collection (most_balanced_minimum_cut.h:90-98).
         for (NodeID on : original_graph->nodes()) {
             for (EdgeID oe : original_graph->edges_of(on)) {
                 NodeID ot = original_graph->getEdgeTarget(on, oe);
-                if (original_graph->getNodeInCut(on)
-                    != original_graph->getNodeInCut(ot)) {
+                bool in_on = original_graph->getNodeInCut(on);
+                bool in_ot = original_graph->getNodeInCut(ot);
+                bool diff = (in_on != in_ot);
+                if (diff) {
                     originalBestcutEdges.emplace_back(on, oe);
                 }
+                std::fprintf(stderr,
+                    "[TRACE-MB-FE] on:%u oe:%lu ot:%u in_on:%d in_ot:%d "
+                    "diff:%d emit:%d\n",
+                    on, (unsigned long)oe, ot, (int)in_on, (int)in_ot,
+                    (int)diff, (int)diff);
             }
         }
 

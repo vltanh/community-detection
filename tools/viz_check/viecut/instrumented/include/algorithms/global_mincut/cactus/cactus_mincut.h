@@ -100,7 +100,18 @@ class cactus_mincut : public minimum_cut {
 
         NodeID previous_size = UNDEFINED_NODE;
         int loop_iter = 0;
-        while (graphs.back()->number_of_nodes() * 1.01 < previous_size) {
+        while (true) {
+            // [TRACE-CM] outer-while FP product n*1.01 BEFORE+AFTER mult.
+            NodeID nn = graphs.back()->number_of_nodes();
+            double nn_d = static_cast<double>(nn);
+            double nn_x_101 = nn_d * 1.01;
+            bool cont = (nn_x_101 < previous_size);
+            std::fprintf(stderr,
+                "[TRACE-CM] outer_guard loop_iter:%d n:%u nn_d:%f "
+                "nn_x_101:%f prev:%u cont:%d\n",
+                loop_iter, nn, nn_d, nn_x_101,
+                previous_size, (int)cont);
+            if (!cont) break;
             previous_size = graphs.back()->number_of_nodes();
             auto current_graph = graphs.back();
             EdgeWeight current_mincut = mincut;
@@ -117,16 +128,29 @@ class cactus_mincut : public minimum_cut {
             timer time;
             auto uf = noi.modified_capforest(current_graph, mincut + 1);
 
+            // [TRACE-CM-D1] degree-1 cleanup per-node (cactus_mincut.h:108-118).
+            // T4: degree==1 && wgt==mincut && uf.n()>1.
             for (NodeID n : current_graph->nodes()) {
                 EdgeID e = current_graph->get_first_edge(n);
-                if (current_graph->get_first_invalid_edge(n) - e == 1) {
-                    if ((current_graph->getEdgeWeight(n, e) == mincut)
-                        && uf.n() > 1) {
-                        NodeID t = current_graph->getEdgeTarget(n, e);
-                        uf.Union(n, t);
-                        guaranteed_edges.back().emplace_back(n, t);
-                    }
+                EdgeID fie = current_graph->get_first_invalid_edge(n);
+                EdgeID deg_diff = fie - e;
+                bool deg1 = (deg_diff == 1);
+                EdgeWeight w = deg1 ? current_graph->getEdgeWeight(n, e) : 0;
+                bool wgt_eq_mc = deg1 ? (w == mincut) : false;
+                bool ufn_gt1 = uf.n() > 1;
+                bool take = deg1 && wgt_eq_mc && ufn_gt1;
+                NodeID t = take ? current_graph->getEdgeTarget(n, e) : 0;
+                if (take) {
+                    uf.Union(n, t);
+                    guaranteed_edges.back().emplace_back(n, t);
                 }
+                std::fprintf(stderr,
+                    "[TRACE-CM-D1] iter:%d n:%u fie:%lu deg:%lu wgt:%lu "
+                    "mc:%lu deg1:%d wgt_eq_mc:%d ufn_gt1:%d take:%d t:%u\n",
+                    loop_iter, n, (unsigned long)fie, (unsigned long)deg_diff,
+                    (unsigned long)w, (unsigned long)mincut,
+                    (int)deg1, (int)wgt_eq_mc, (int)ufn_gt1,
+                    (int)take, t);
             }
 
             std::fprintf(stderr,
@@ -180,6 +204,14 @@ class cactus_mincut : public minimum_cut {
             std::fprintf(stderr,
                 "[TRACE-CM] pr12 iter:%d before_n:%u uf_n:%u\n",
                 loop_iter, graphs.back()->n(), uf12.n());
+            {
+                std::fprintf(stderr, "[TRACE-CM] pr12_uf iter:%d members",
+                             loop_iter);
+                for (NodeID v = 0; v < graphs.back()->n(); v++) {
+                    std::fprintf(stderr, " %u->%u", v, uf12.Find(v));
+                }
+                std::fprintf(stderr, "\n");
+            }
             if (uf12.n() < graphs.back()->number_of_nodes()) {
                 auto g12 = contraction::fromUnionFind(
                     graphs.back(), &uf12, true);
@@ -250,8 +282,16 @@ class cactus_mincut : public minimum_cut {
             loop_iter++;
         }
 
-        if (graphs.back()->number_of_nodes() > 1)
+        bool noi_branch = (graphs.back()->number_of_nodes() > 1);
+        std::fprintf(stderr,
+            "[TRACE-CM] noi_branch n_after_outer:%u take:%d\n",
+            graphs.back()->number_of_nodes(), (int)noi_branch);
+        if (noi_branch) {
             mincut = noi.perform_minimum_cut(graphs.back());
+            std::fprintf(stderr,
+                "[TRACE-CM] noi_result mincut:%lu\n",
+                (unsigned long)mincut);
+        }
 
         rc.setMincut(mincut);
         std::fprintf(stderr, "[TRACE-CM] before_flowmincut n:%u m:%lu mincut:%lu\n",
@@ -277,6 +317,20 @@ class cactus_mincut : public minimum_cut {
 
         minimum_cut_helpers<GraphPtr>::setVertexLocations(
             out_graph, graphs, ge_ids, guaranteed_edges, mincut);
+        // [TRACE-CM-SVL] per-vertex partition assignment after
+        // setVertexLocations consumes the whole graphs stack +
+        // guaranteed_edges. This is the final partition over original
+        // vertices (cactus_mincut.h:173).
+        std::fprintf(stderr,
+            "[TRACE-CM-SVL] out_graph_n:%u graphs_n:%zu\n",
+            out_graph->n(), graphs.size());
+        for (NodeID v = 0; v < out_graph->n(); v++) {
+            std::fprintf(stderr,
+                "[TRACE-CM-SVL] node:%u contained:", v);
+            for (NodeID cv : out_graph->containedVertices(v))
+                std::fprintf(stderr, "%u,", cv);
+            std::fprintf(stderr, "\n");
+        }
 
         std::vector<std::pair<NodeID, EdgeID> > mb_edges;
         if (configuration::getConfig()->find_most_balanced_cut) {

@@ -32,7 +32,8 @@ CXXFLAGS_BASE=(-Wall -Wextra -pedantic -Wnon-virtual-dtor -std=c++14 -O3 -fopenm
                -ffp-contract=off -fno-unsafe-math-optimizations -fno-fast-math
                -ffloat-store -fno-tree-vectorize)
 INC=(-I"$IMSRC" -I"$IMSRC/core")
-TRACE_INC=(-include "$HERE/infomath_traced.h")
+TRACE_INC=(-include "$HERE/infomath_traced.h"
+           -include "$HERE/map_equation_traced.h")
 
 build_one() {
   local mode="$1"             # CANONICAL_MODE or TRACER_MODE

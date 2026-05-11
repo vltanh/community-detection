@@ -199,6 +199,69 @@ struct InfomapTraceVisit {
   unsigned int pairPullOldM = 0;            // oldModuleIndex (== current.index
                                              // pre-move)
   bool pairPullTriggered = false;
+
+  // [TRACE-IM P0-1] getDeltaCodelengthOnMovingNode term breakdown
+  // (`MapEquation.h:197-226`). Captured for the CHOSEN candidate (the
+  // bestDeltaModule that the optimizer ultimately picks); not the full
+  // candidate sweep. Optional (gated by env INFOMAP_TRACE_TERMS=1).
+  // Field meanings mirror canonical's local variables 1-to-1:
+  //   dt_delta_enter           = plogp(enterFlow + dEEOld - dEENew)
+  //                              - enterFlow_log_enterFlow
+  //   dt_delta_enter_log_enter = -plogp(M[oldM].enterFlow) - plogp(M[newM].enterFlow)
+  //                              + plogp(M[oldM].enterFlow - v.enterFlow + dEEOld)
+  //                              + plogp(M[newM].enterFlow + v.enterFlow - dEENew)
+  //   dt_delta_exit_log_exit   = same shape on .exitFlow
+  //   dt_delta_flow_log_flow   = same shape on .exitFlow + .flow
+  // dt_plogp_args[0..15] = the 16 plogp arguments in source order:
+  //   [0]    = enterFlow + dEEOld - dEENew                          (line 205)
+  //   [1..4] = enter terms: M[o].enterFlow, M[n].enterFlow,
+  //            M[o].enterFlow - v.enterFlow + dEEOld,
+  //            M[n].enterFlow + v.enterFlow - dEENew                 (lines 207-210)
+  //   [5..8] = exit terms: M[o].exitFlow, M[n].exitFlow,
+  //            M[o].exitFlow - v.exitFlow + dEEOld,
+  //            M[n].exitFlow + v.exitFlow - dEENew                   (lines 212-215)
+  //   [9..12]= flow terms: M[o].exit+flow, M[n].exit+flow,
+  //            M[o].exit+flow - v.exit - v.flow + dEEOld,
+  //            M[n].exit+flow + v.exit + v.flow - dEENew             (lines 217-222)
+  //   [13..15] = enterFlow_log_enterFlow snapshot pre-call + spare slots
+  //              (set 0 unless captured separately)
+  bool dt_captured = false;
+  double dt_delta_enter = 0.0;
+  double dt_delta_enter_log_enter = 0.0;
+  double dt_delta_exit_log_exit = 0.0;
+  double dt_delta_flow_log_flow = 0.0;
+  double dt_plogp_args[16] = {0};
+  // [TRACE-IM P0-2] updateCodelengthOnMovingNode term breakdown
+  // (`MapEquation.h:229-260`). Captured AFTER the running-tracker update
+  // (so post-add plogp results are observable). The 8 plogp arguments
+  // appear twice — once in the `-= plogp(...)` block (lines 238-240),
+  // once in the `+= plogp(...)` block (lines 251-253) — with different
+  // operand state in between (FlowData -= then += on lines 242-243,
+  // deltaEEOld/New += on 245-248). All 16 args captured in source order
+  // for term-by-term bisection.
+  // ut_plogp_pre[0..7]  = pre-subtract args:
+  //   [0,1]   = M[o].enterFlow, M[n].enterFlow              (line 238)
+  //   [2,3]   = M[o].exitFlow,  M[n].exitFlow               (line 239)
+  //   [4,5]   = M[o].exitFlow + M[o].flow, M[n].exitFlow + M[n].flow  (line 240)
+  //   [6]     = M[o].enterFlow (pre-update, before plogp(enterFlow))  (line 255 input)
+  //   [7]     = spare (running enterFlow before line 250 += increments)
+  // ut_plogp_post[0..7] = post-add args (after FlowData ± + dEE ± steps):
+  //   [0,1]   = M[o].enterFlow, M[n].enterFlow (line 251)
+  //   [2,3]   = M[o].exitFlow,  M[n].exitFlow  (line 252)
+  //   [4,5]   = M[o].exitFlow + M[o].flow, M[n].exitFlow + M[n].flow  (line 253)
+  //   [6]     = updated enterFlow scalar (the running tracker fed into plogp on line 255)
+  //   [7]     = spare
+  bool ut_captured = false;
+  double ut_plogp_pre[8] = {0};
+  double ut_plogp_post[8] = {0};
+  // enter_log_enter / exit_log_exit / flow_log_flow / enterFlow running
+  // values BEFORE the update was applied — these are the inputs to the
+  // `-= plogp(...) ... -= plogp(...)` block on lines 237-240. The post
+  // values are already on the visit row as ele/xle/fle/ef.
+  double ut_enter_log_enter_pre = 0.0;
+  double ut_exit_log_exit_pre = 0.0;
+  double ut_flow_log_flow_pre = 0.0;
+  double ut_enterFlow_pre = 0.0;
 };
 
 struct InfomapTraceCall {
@@ -290,6 +353,63 @@ struct InfomapTraceFindTopIter {
   unsigned int num_top_modules_post = 0;  // numTopModules() post-iter
 };
 
+// [TRACE-IM P0-3] consolidateModules EdgeMap aggregation probe
+// (`InfomapOptimizer.h:923-1010`, the `for (auto& node : network)` block
+// at :958-975 + the std::map<NodePair, double> moduleLinks at :956).
+// Captures three layers so future divergence can be bisected term-by-term:
+//   pre_triples = each (src_active_id, m1, m2, edge_flow) triple in the
+//                 network[i].outEdges insertion order BEFORE
+//                 isUndirectedClustering() swap-to-canonical-order.
+//                 Mirrors the JS port's pre-sort traversal.
+//   agg_ops     = per-`+=` event: keys (m1,m2) AFTER undirected swap,
+//                 value PRE-add, added_flow, value POST-add, and
+//                 was_insertion (false = ret.first->second += edge.data.flow,
+//                 true  = moduleLinks.insert(...) created entry).
+//                 std::map insert semantics: first call to (m1,m2)
+//                 creates the entry with value=edge.flow; subsequent
+//                 calls aggregate via `+=`. Both paths captured.
+//   sorted_map  = final std::map iteration order = ASC by (first,second).
+//                 (m1, m2, aggregated_flow) tuples in lex-sort order;
+//                 used by JS to verify its post-aggregation sorted-pair
+//                 sequence matches.
+struct InfomapTraceConsolidate {
+  int level_idx = -1;                  // matches the level whose
+                                        // active network feeds this
+                                        // consolidate
+  unsigned int active_n = 0;
+  bool is_undirected = true;            // m_infomap->isUndirectedClustering()
+  // Pre-aggregation triples (no swap yet): src_active_id, module1, module2, flow.
+  // Network iteration: for i in [0..N) { for e in network[i].outEdges() }.
+  // Cross-module edges only (module1 != module2).
+  struct PreTriple {
+    unsigned int src = 0;
+    unsigned int m1 = 0;
+    unsigned int m2 = 0;
+    double flow = 0.0;
+  };
+  std::vector<PreTriple> pre_triples;
+  // Per `+=` operation (after undirected swap): canonical key (m1<=m2 for
+  // undirected), value PRE, added flow, value POST, was_insertion flag.
+  struct AggOp {
+    unsigned int m1 = 0;
+    unsigned int m2 = 0;
+    double pre = 0.0;
+    double add = 0.0;
+    double post = 0.0;
+    bool was_insertion = false;
+  };
+  std::vector<AggOp> agg_ops;
+  // Final std::map iteration order: (m1, m2, aggregated_flow) ASC sorted.
+  // This is the order outEdges are appended to super-modules at
+  // InfomapOptimizer.h:978-981 (`for (auto& e : moduleLinks)`).
+  struct SortedEntry {
+    unsigned int m1 = 0;
+    unsigned int m2 = 0;
+    double flow = 0.0;
+  };
+  std::vector<SortedEntry> sorted_map;
+};
+
 struct InfomapTrace {
   double L_final = 0.0;
   unsigned int num_leaf_nodes = 0;
@@ -300,6 +420,7 @@ struct InfomapTrace {
   std::vector<InfomapTraceCoarseSub> coarseTune_subs;
   std::vector<InfomapTracePartitionBail> partition_bails;
   std::vector<InfomapTraceFindTopIter> findTop_iters;
+  std::vector<InfomapTraceConsolidate> consolidates;
 };
 
 static InfomapTrace g_infomap_trace;
@@ -324,11 +445,21 @@ static std::string g_current_stage_label;
 // findTopModulesRepeatedly probe based on InfomapBase's m_isMain).
 
 InfomapTrace& getInfomapTrace() { return g_infomap_trace; }
+// Forward declarations for env-gated probe flags (defined further below
+// next to the P0 probe entry points).
+extern bool g_trace_terms_enabled;
+extern bool g_trace_consol_enabled;
 void resetInfomapTrace() {
   g_infomap_trace = InfomapTrace();
   g_level_active_id.clear();
   g_last_consolidated_L_stack = { 0.0 };
   g_current_stage_label.clear();
+  // [TRACE-IM P0] env-gated term/consolidate probe flags. Read each
+  // reset so harness can toggle per-run via setenv before run().
+  const char* t = std::getenv("INFOMAP_TRACE_TERMS");
+  g_trace_terms_enabled = (t && t[0] == '1');
+  const char* c = std::getenv("INFOMAP_TRACE_CONSOL");
+  g_trace_consol_enabled = (c && c[0] == '1');
 }
 
 void traceBeginLevel(InfomapBase& base, bool is_main)
@@ -561,6 +692,132 @@ void traceMoveProbe(unsigned int oldM,
   vt.node_exit = node_exit;
   vt.node_flow = node_flow;
 }
+
+// [TRACE-IM P0-1] Per-ΔL term breakdown for the chosen candidate.
+// Called from inside `getDeltaCodelengthOnMovingNode` in
+// `map_equation_traced.h` AFTER the four named intermediates are
+// computed and BEFORE `return deltaL`. The optimizer's call site only
+// retains the bestDeltaModule pick, so the probe writes onto the
+// last visit row of the last call (cleared if no visit yet, e.g.
+// when called from a no-op path). For non-chosen candidates the probe
+// is overwritten in-place on each call, so the row reflects the LAST
+// ΔL evaluation for that visit (the moduleEnumeration-last candidate).
+// To probe the chosen candidate specifically, the optimizer side stashes
+// the probe at the same site as bestDeltaModule pick — see
+// infomap_optimizer_traced.h `_probe_dl_*` capture variables.
+void traceDeltaTerms(double delta_enter,
+                     double delta_enter_log_enter,
+                     double delta_exit_log_exit,
+                     double delta_flow_log_flow,
+                     const double plogp_args[16])
+{
+  if (g_infomap_trace.calls.empty()) return;
+  auto& call = g_infomap_trace.calls.back();
+  if (call.visits.empty()) return;
+  auto& vt = call.visits.back();
+  // First write of this visit (sticky-first): the optimizer arranges to
+  // call this probe ONLY for the chosen candidate's ΔL (after the
+  // best/strongest pick), so the row reflects the picked module's
+  // intermediates. If called multiple times per visit (per candidate),
+  // the LAST call wins and the JS side mirrors with the same site.
+  vt.dt_captured = true;
+  vt.dt_delta_enter = delta_enter;
+  vt.dt_delta_enter_log_enter = delta_enter_log_enter;
+  vt.dt_delta_exit_log_exit = delta_exit_log_exit;
+  vt.dt_delta_flow_log_flow = delta_flow_log_flow;
+  for (unsigned int i = 0; i < 16; ++i) vt.dt_plogp_args[i] = plogp_args[i];
+}
+
+// [TRACE-IM P0-2] Per-update term breakdown.
+// Called from `updateCodelengthOnMovingNode` AFTER the final
+// `codelength = indexCodelength + moduleCodelength;` line. Captures
+// the 8 plogp arguments from the pre-subtract block (lines 238-240 +
+// the running enterFlow read on line 237 + line 255 input
+// `plogp(enterFlow)`) and the 8 plogp arguments from the post-add
+// block (lines 251-253 + post-update enterFlow input).
+// Also captures the FOUR pre-update running scalars
+// (enter_log_enter, exit_log_exit, flow_log_flow, enterFlow) so the
+// JS replay can verify each `-=` reduces from the same baseline.
+void traceUpdateTerms(double enter_log_enter_pre,
+                      double exit_log_exit_pre,
+                      double flow_log_flow_pre,
+                      double enterFlow_pre,
+                      const double plogp_pre[8],
+                      const double plogp_post[8])
+{
+  if (g_infomap_trace.calls.empty()) return;
+  auto& call = g_infomap_trace.calls.back();
+  if (call.visits.empty()) return;
+  auto& vt = call.visits.back();
+  vt.ut_captured = true;
+  vt.ut_enter_log_enter_pre = enter_log_enter_pre;
+  vt.ut_exit_log_exit_pre = exit_log_exit_pre;
+  vt.ut_flow_log_flow_pre = flow_log_flow_pre;
+  vt.ut_enterFlow_pre = enterFlow_pre;
+  for (unsigned int i = 0; i < 8; ++i) {
+    vt.ut_plogp_pre[i]  = plogp_pre[i];
+    vt.ut_plogp_post[i] = plogp_post[i];
+  }
+}
+
+// [TRACE-IM P0-3] consolidateModules EdgeMap probe entry points.
+// Three calls per consolidate invocation: begin (open a fresh record),
+// add per-`+=` event, finish with sorted-map snapshot.
+void traceConsolidateBegin(InfomapBase& base, unsigned int active_n,
+                           bool is_undirected)
+{
+  InfomapTraceConsolidate rec;
+  rec.level_idx = static_cast<int>(g_infomap_trace.levels.size()) - 1;
+  rec.active_n = active_n;
+  rec.is_undirected = is_undirected;
+  // Suppress unused-param when base eventually unused beyond the level
+  // index — kept in signature for parity with other trace entry points.
+  (void)base;
+  g_infomap_trace.consolidates.push_back(std::move(rec));
+}
+
+void traceConsolidatePreTriple(unsigned int src, unsigned int m1,
+                                unsigned int m2, double flow)
+{
+  if (g_infomap_trace.consolidates.empty()) return;
+  auto& rec = g_infomap_trace.consolidates.back();
+  InfomapTraceConsolidate::PreTriple t;
+  t.src = src; t.m1 = m1; t.m2 = m2; t.flow = flow;
+  rec.pre_triples.push_back(t);
+}
+
+void traceConsolidateAggOp(unsigned int m1, unsigned int m2,
+                            double pre, double add, double post,
+                            bool was_insertion)
+{
+  if (g_infomap_trace.consolidates.empty()) return;
+  auto& rec = g_infomap_trace.consolidates.back();
+  InfomapTraceConsolidate::AggOp op;
+  op.m1 = m1; op.m2 = m2; op.pre = pre; op.add = add; op.post = post;
+  op.was_insertion = was_insertion;
+  rec.agg_ops.push_back(op);
+}
+
+void traceConsolidateSorted(unsigned int m1, unsigned int m2, double flow)
+{
+  if (g_infomap_trace.consolidates.empty()) return;
+  auto& rec = g_infomap_trace.consolidates.back();
+  InfomapTraceConsolidate::SortedEntry e;
+  e.m1 = m1; e.m2 = m2; e.flow = flow;
+  rec.sorted_map.push_back(e);
+}
+
+// [TRACE-IM P0] global flag for term-level probes. Off by default
+// (env var INFOMAP_TRACE_TERMS=1 enables); when off, the term-level
+// emit path in main_traced.cpp is skipped and the JS harness skips
+// the corresponding compare. Probes still fire into trace state but
+// the cost is in-memory only.
+bool g_trace_terms_enabled = false;
+// [TRACE-IM P0-3] global flag for consolidate-map probes. Off by
+// default (env var INFOMAP_TRACE_CONSOL=1 enables). The probe is more
+// expensive on large nets (per-edge insertion record); env-gated emit
+// keeps default trace size on the 153/153 L4 panel unchanged.
+bool g_trace_consol_enabled = false;
 
 static void traceCaptureStage(InfomapBase& self, const std::string& label)
 {

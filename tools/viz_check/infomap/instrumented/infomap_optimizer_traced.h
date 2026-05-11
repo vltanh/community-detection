@@ -100,6 +100,37 @@ extern int lookupLevelActiveId(InfoNode* node);
 extern void tracePartitionEnd(InfomapBase& base,
                                const std::vector<InfoNode*>& network,
                                unsigned int numMoved);
+// [TRACE-IM P0-1] ΔL term breakdown — writes onto the last visit row
+// of the last call. Called from inside MapEquation's closed-form
+// getDeltaCodelengthOnMovingNode at the chosen candidate site (see
+// infomap_optimizer_traced.h capture pattern around line 595).
+extern void traceDeltaTerms(double delta_enter,
+                            double delta_enter_log_enter,
+                            double delta_exit_log_exit,
+                            double delta_flow_log_flow,
+                            const double plogp_args[16]);
+// [TRACE-IM P0-2] update term breakdown — writes onto the last visit
+// row after updateCodelengthOnMovingNode runs.
+extern void traceUpdateTerms(double enter_log_enter_pre,
+                             double exit_log_exit_pre,
+                             double flow_log_flow_pre,
+                             double enterFlow_pre,
+                             const double plogp_pre[8],
+                             const double plogp_post[8]);
+// [TRACE-IM P0-3] consolidateModules EdgeMap probes.
+extern void traceConsolidateBegin(InfomapBase& base, unsigned int active_n,
+                                   bool is_undirected);
+extern void traceConsolidatePreTriple(unsigned int src, unsigned int m1,
+                                       unsigned int m2, double flow);
+extern void traceConsolidateAggOp(unsigned int m1, unsigned int m2,
+                                   double pre, double add, double post,
+                                   bool was_insertion);
+extern void traceConsolidateSorted(unsigned int m1, unsigned int m2, double flow);
+// [TRACE-IM P0] env-gated probe flags. When false, the corresponding
+// emit path in main_traced.cpp is suppressed (probes still write to
+// trace state but JSON emit skipped) to preserve default trace size.
+extern bool g_trace_terms_enabled;
+extern bool g_trace_consol_enabled;
 }
 
 namespace infomap {
@@ -955,23 +986,44 @@ inline void InfomapOptimizer<Objective>::consolidateModules(bool replaceExisting
   using EdgeMap = std::map<NodePair, double>;
   EdgeMap moduleLinks;
 
-  for (auto& node : network) {
+  // [TRACE-IM P0-3] open consolidate-record for this invocation.
+  traceConsolidateBegin(*m_infomap, static_cast<unsigned int>(numNodes),
+                        m_infomap->isUndirectedClustering());
+
+  for (unsigned int _src_idx = 0; _src_idx < numNodes; ++_src_idx) {
+    auto& node = network[_src_idx];
     unsigned int module1 = node->index;
     for (auto& e : node->outEdges()) {
       InfoEdge& edge = *e;
       unsigned int module2 = edge.target->index;
       if (module1 != module2) {
+        // [TRACE-IM P0-3] log pre-aggregation triple in network-iter
+        // order BEFORE the undirected swap (so cpp's raw module IDs
+        // are visible to the JS comparator).
+        traceConsolidatePreTriple(_src_idx, module1, module2, edge.data.flow);
         // Use new variables to not swap module1
         unsigned int m1 = module1, m2 = module2;
         // If undirected, the order may be swapped to aggregate the edge on an opposite one
         if (m_infomap->isUndirectedClustering() && m1 > m2)
           std::swap(m1, m2);
+        // [TRACE-IM P0-3] capture pre-value (default 0 if insertion).
+        auto _existing = moduleLinks.find(NodePair(m1, m2));
+        double _pre = (_existing != moduleLinks.end()) ? _existing->second : 0.0;
         auto ret = moduleLinks.insert(std::make_pair(NodePair(m1, m2), edge.data.flow));
         if (!ret.second) {
           ret.first->second += edge.data.flow;
         }
+        traceConsolidateAggOp(m1, m2, _pre, edge.data.flow,
+                              ret.first->second, ret.second);
       }
     }
+  }
+
+  // [TRACE-IM P0-3] dump final std::map iteration order (ASC by
+  // (first,second)). Same order canonical iterates when appending
+  // super-edges via addOutEdge below.
+  for (auto& _e : moduleLinks) {
+    traceConsolidateSorted(_e.first.first, _e.first.second, _e.second);
   }
 
   // Add the aggregated edge flow structure to the new modules

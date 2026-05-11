@@ -23,6 +23,23 @@
 
 namespace infomap {
 
+// [TRACE-IM P0] Forward declarations for term-breakdown probes.
+// Defined in infomap_base_traced.cpp. Linker resolves them at link
+// time so this header stays a pure template + can still be included
+// transitively by BiasedMapEquation/MemMapEquation/MetaMapEquation
+// without forcing an extra cpp dep.
+extern void traceDeltaTerms(double delta_enter,
+                            double delta_enter_log_enter,
+                            double delta_exit_log_exit,
+                            double delta_flow_log_flow,
+                            const double plogp_args[16]);
+extern void traceUpdateTerms(double enter_log_enter_pre,
+                             double exit_log_exit_pre,
+                             double flow_log_flow_pre,
+                             double enterFlow_pre,
+                             const double plogp_pre[8],
+                             const double plogp_post[8]);
+
 class InfoNode;
 
 template <typename FlowDataType = FlowData, typename DeltaFlowDataType = DeltaFlow>
@@ -202,6 +219,31 @@ double MapEquation<FlowDataType, DeltaFlowDataType>::getDeltaCodelengthOnMovingN
   double deltaEnterExitOldModule = oldModuleDelta.deltaEnter + oldModuleDelta.deltaExit;
   double deltaEnterExitNewModule = newModuleDelta.deltaEnter + newModuleDelta.deltaExit;
 
+  // [TRACE-IM P0-1] capture the 16 plogp arguments in source order.
+  // Computed BEFORE the plogp calls so the probe sees identical operand
+  // bits even if a future build accidentally re-orders + the formula
+  // sub-expressions. Arg indices match the contract in the visit row
+  // dt_plogp_args[16] documentation in infomap_base_traced.cpp.
+  double _dl_args[16];
+  _dl_args[0]  = enterFlow + deltaEnterExitOldModule - deltaEnterExitNewModule;
+  _dl_args[1]  = moduleFlowData[oldModule].enterFlow;
+  _dl_args[2]  = moduleFlowData[newModule].enterFlow;
+  _dl_args[3]  = moduleFlowData[oldModule].enterFlow - current.data.enterFlow + deltaEnterExitOldModule;
+  _dl_args[4]  = moduleFlowData[newModule].enterFlow + current.data.enterFlow - deltaEnterExitNewModule;
+  _dl_args[5]  = moduleFlowData[oldModule].exitFlow;
+  _dl_args[6]  = moduleFlowData[newModule].exitFlow;
+  _dl_args[7]  = moduleFlowData[oldModule].exitFlow - current.data.exitFlow + deltaEnterExitOldModule;
+  _dl_args[8]  = moduleFlowData[newModule].exitFlow + current.data.exitFlow - deltaEnterExitNewModule;
+  _dl_args[9]  = moduleFlowData[oldModule].exitFlow + moduleFlowData[oldModule].flow;
+  _dl_args[10] = moduleFlowData[newModule].exitFlow + moduleFlowData[newModule].flow;
+  _dl_args[11] = moduleFlowData[oldModule].exitFlow + moduleFlowData[oldModule].flow
+                 - current.data.exitFlow - current.data.flow + deltaEnterExitOldModule;
+  _dl_args[12] = moduleFlowData[newModule].exitFlow + moduleFlowData[newModule].flow
+                 + current.data.exitFlow + current.data.flow - deltaEnterExitNewModule;
+  _dl_args[13] = enterFlow_log_enterFlow; // pre-call snapshot (subtracted into delta_enter)
+  _dl_args[14] = 0.0;                      // spare
+  _dl_args[15] = 0.0;                      // spare
+
   double delta_enter = plogp(enterFlow + deltaEnterExitOldModule - deltaEnterExitNewModule) - enterFlow_log_enterFlow;
 
   double delta_enter_log_enter = -plogp(moduleFlowData[oldModule].enterFlow)
@@ -222,6 +264,13 @@ double MapEquation<FlowDataType, DeltaFlowDataType>::getDeltaCodelengthOnMovingN
               + current.data.exitFlow + current.data.flow - deltaEnterExitNewModule);
 
   double deltaL = delta_enter - delta_enter_log_enter - delta_exit_log_exit + delta_flow_log_flow;
+  // [TRACE-IM P0-1] Probe with the 4 named intermediates + 16 plogp
+  // arguments (in source order). Overwrites on each candidate; the
+  // visit row reflects the LAST ΔL evaluation for that visit (the
+  // moduleEnumeration-last candidate). JS side mirrors at the same
+  // call ordering.
+  traceDeltaTerms(delta_enter, delta_enter_log_enter,
+                  delta_exit_log_exit, delta_flow_log_flow, _dl_args);
   return deltaL;
 }
 
@@ -233,6 +282,25 @@ void MapEquation<FlowDataType, DeltaFlowDataType>::updateCodelengthOnMovingNode(
   unsigned int newModule = newModuleDelta.module;
   double deltaEnterExitOldModule = oldModuleDelta.deltaEnter + oldModuleDelta.deltaExit;
   double deltaEnterExitNewModule = newModuleDelta.deltaEnter + newModuleDelta.deltaExit;
+
+  // [TRACE-IM P0-2] Capture pre-update running scalars + the 8 plogp
+  // arguments of the `-= plogp(...)` block (lines 237-240 of canonical
+  // MapEquation.h). Order matches the source: oldM.enter, newM.enter,
+  // oldM.exit, newM.exit, oldM.exit+flow, newM.exit+flow, then a
+  // 7th slot for the running enterFlow read on line 237, then a spare.
+  double _ut_pre_scalars_ele = enter_log_enter;
+  double _ut_pre_scalars_xle = exit_log_exit;
+  double _ut_pre_scalars_fle = flow_log_flow;
+  double _ut_pre_scalars_ef  = enterFlow;
+  double _ut_plogp_pre[8];
+  _ut_plogp_pre[0] = moduleFlowData[oldModule].enterFlow;
+  _ut_plogp_pre[1] = moduleFlowData[newModule].enterFlow;
+  _ut_plogp_pre[2] = moduleFlowData[oldModule].exitFlow;
+  _ut_plogp_pre[3] = moduleFlowData[newModule].exitFlow;
+  _ut_plogp_pre[4] = moduleFlowData[oldModule].exitFlow + moduleFlowData[oldModule].flow;
+  _ut_plogp_pre[5] = moduleFlowData[newModule].exitFlow + moduleFlowData[newModule].flow;
+  _ut_plogp_pre[6] = enterFlow;
+  _ut_plogp_pre[7] = 0.0; // spare
 
   enterFlow -= moduleFlowData[oldModule].enterFlow + moduleFlowData[newModule].enterFlow;
   enter_log_enter -= plogp(moduleFlowData[oldModule].enterFlow) + plogp(moduleFlowData[newModule].enterFlow);
@@ -257,6 +325,21 @@ void MapEquation<FlowDataType, DeltaFlowDataType>::updateCodelengthOnMovingNode(
   indexCodelength = enterFlow_log_enterFlow - enter_log_enter - exitNetworkFlow_log_exitNetworkFlow;
   moduleCodelength = -exit_log_exit + flow_log_flow - nodeFlow_log_nodeFlow;
   codelength = indexCodelength + moduleCodelength;
+  // [TRACE-IM P0-2] Capture post-update plogp arguments (the 8 args fed
+  // to the `+= plogp(...)` block on lines 251-253 + the enterFlow input
+  // to `plogp(enterFlow)` on line 255). Then probe.
+  double _ut_plogp_post[8];
+  _ut_plogp_post[0] = moduleFlowData[oldModule].enterFlow;
+  _ut_plogp_post[1] = moduleFlowData[newModule].enterFlow;
+  _ut_plogp_post[2] = moduleFlowData[oldModule].exitFlow;
+  _ut_plogp_post[3] = moduleFlowData[newModule].exitFlow;
+  _ut_plogp_post[4] = moduleFlowData[oldModule].exitFlow + moduleFlowData[oldModule].flow;
+  _ut_plogp_post[5] = moduleFlowData[newModule].exitFlow + moduleFlowData[newModule].flow;
+  _ut_plogp_post[6] = enterFlow;
+  _ut_plogp_post[7] = 0.0; // spare
+  traceUpdateTerms(_ut_pre_scalars_ele, _ut_pre_scalars_xle,
+                   _ut_pre_scalars_fle, _ut_pre_scalars_ef,
+                   _ut_plogp_pre, _ut_plogp_post);
 }
 
 template <typename FlowDataType, typename DeltaFlowDataType>

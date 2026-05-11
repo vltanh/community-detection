@@ -97,6 +97,23 @@ struct InfomapTraceVisit {
     int pairPullV = -1;
     unsigned int pairPullOldM = 0;
     bool pairPullTriggered = false;
+    // [TRACE-IM P0-1/P0-2] term-breakdown fields. Mirrors layout in
+    // infomap_base_traced.cpp's InfomapTraceVisit; populated by
+    // traceDeltaTerms / traceUpdateTerms probes. Emitted only when
+    // env INFOMAP_TRACE_TERMS=1.
+    bool dt_captured = false;
+    double dt_delta_enter = 0.0;
+    double dt_delta_enter_log_enter = 0.0;
+    double dt_delta_exit_log_exit = 0.0;
+    double dt_delta_flow_log_flow = 0.0;
+    double dt_plogp_args[16] = {0};
+    bool ut_captured = false;
+    double ut_plogp_pre[8] = {0};
+    double ut_plogp_post[8] = {0};
+    double ut_enter_log_enter_pre = 0.0;
+    double ut_exit_log_exit_pre = 0.0;
+    double ut_flow_log_flow_pre = 0.0;
+    double ut_enterFlow_pre = 0.0;
 };
 struct InfomapTraceCall {
     int level_idx = -1;
@@ -147,6 +164,35 @@ struct InfomapTraceFindTopIter {
     double L_post_consolidate = 0.0;
     unsigned int num_top_modules_post = 0;
 };
+// [TRACE-IM P0-3] consolidateModules EdgeMap probe record. Mirrors layout
+// in infomap_base_traced.cpp.
+struct InfomapTraceConsolidate {
+    int level_idx = -1;
+    unsigned int active_n = 0;
+    bool is_undirected = true;
+    struct PreTriple {
+        unsigned int src = 0;
+        unsigned int m1 = 0;
+        unsigned int m2 = 0;
+        double flow = 0.0;
+    };
+    std::vector<PreTriple> pre_triples;
+    struct AggOp {
+        unsigned int m1 = 0;
+        unsigned int m2 = 0;
+        double pre = 0.0;
+        double add = 0.0;
+        double post = 0.0;
+        bool was_insertion = false;
+    };
+    std::vector<AggOp> agg_ops;
+    struct SortedEntry {
+        unsigned int m1 = 0;
+        unsigned int m2 = 0;
+        double flow = 0.0;
+    };
+    std::vector<SortedEntry> sorted_map;
+};
 struct InfomapTrace {
     double L_final = 0.0;
     unsigned int num_leaf_nodes = 0;
@@ -157,9 +203,12 @@ struct InfomapTrace {
     std::vector<InfomapTraceCoarseSub> coarseTune_subs;
     std::vector<InfomapTracePartitionBail> partition_bails;
     std::vector<InfomapTraceFindTopIter> findTop_iters;
+    std::vector<InfomapTraceConsolidate> consolidates;
 };
 extern InfomapTrace& getInfomapTrace();
 extern void resetInfomapTrace();
+extern bool g_trace_terms_enabled;
+extern bool g_trace_consol_enabled;
 }
 
 using namespace infomap;
@@ -495,7 +544,43 @@ int main(int argc, char** argv) {
                       << ",\"nLnk\":" << v.numLinkedInOld
                       << ",\"ppV\":" << v.pairPullV
                       << ",\"ppOM\":" << v.pairPullOldM
-                      << ",\"ppT\":" << (v.pairPullTriggered ? 1 : 0) << "}";
+                      << ",\"ppT\":" << (v.pairPullTriggered ? 1 : 0);
+            // [TRACE-IM P0-1/P0-2] term-breakdown fields. Emitted only
+            // when INFOMAP_TRACE_TERMS=1 to preserve default 153/153 L4
+            // trace sizes. The harness checks for "dt_captured" / "ut_
+            // captured" sentinels to know whether the row carries term
+            // data. Each row adds ~280B (4 term doubles + 16 args + 8+8
+            // plogp + 4 pre scalars = 36 doubles). On CondMat ~5M visits
+            // that's ~1.4GB — too big for default; bisection-only mode.
+            if (infomap::g_trace_terms_enabled) {
+                std::cout << ",\"dtC\":" << (v.dt_captured ? 1 : 0)
+                          << ",\"dtDe\":" << v.dt_delta_enter
+                          << ",\"dtDele\":" << v.dt_delta_enter_log_enter
+                          << ",\"dtDxle\":" << v.dt_delta_exit_log_exit
+                          << ",\"dtDfle\":" << v.dt_delta_flow_log_flow
+                          << ",\"dtA\":[";
+                for (int _i = 0; _i < 16; ++_i) {
+                    if (_i) std::cout << ",";
+                    std::cout << v.dt_plogp_args[_i];
+                }
+                std::cout << "],\"utC\":" << (v.ut_captured ? 1 : 0)
+                          << ",\"utElePre\":" << v.ut_enter_log_enter_pre
+                          << ",\"utXlePre\":" << v.ut_exit_log_exit_pre
+                          << ",\"utFlePre\":" << v.ut_flow_log_flow_pre
+                          << ",\"utEfPre\":" << v.ut_enterFlow_pre
+                          << ",\"utPpre\":[";
+                for (int _i = 0; _i < 8; ++_i) {
+                    if (_i) std::cout << ",";
+                    std::cout << v.ut_plogp_pre[_i];
+                }
+                std::cout << "],\"utPpost\":[";
+                for (int _i = 0; _i < 8; ++_i) {
+                    if (_i) std::cout << ",";
+                    std::cout << v.ut_plogp_post[_i];
+                }
+                std::cout << "]";
+            }
+            std::cout << "}";
         }
         std::cout << "],\"nMoved\":" << c.n_moved
                   << ",\"L_post\":" << c.L_post
@@ -566,7 +651,50 @@ int main(int argc, char** argv) {
                   << ",\"L_postConsol\":" << f.L_post_consolidate
                   << ",\"kPost\":" << f.num_top_modules_post << "}";
     }
-    std::cout << "\n  ]\n}\n";
+    std::cout << "\n  ],\n";
+
+    // [TRACE-IM P0-3] consolidateModules EdgeMap probe emit (gated by
+    // env INFOMAP_TRACE_CONSOL=1). Emits the pre-aggregation triples,
+    // per-`+=` AggOp sequence, and ASC-sorted std::map iteration order
+    // for every consolidateModules invocation. When the env flag is
+    // off, an empty array `[]` is emitted so the harness schema is
+    // stable across modes.
+    std::cout << "  \"consolidates\": [";
+    if (infomap::g_trace_consol_enabled) {
+        std::cout << "\n";
+        for (size_t ci = 0; ci < trace.consolidates.size(); ci++) {
+            const auto& c = trace.consolidates[ci];
+            if (ci) std::cout << ",\n";
+            std::cout << "    {\"levelIdx\":" << c.level_idx
+                      << ",\"activeN\":" << c.active_n
+                      << ",\"isUnd\":" << (c.is_undirected ? 1 : 0)
+                      << ",\"pre\":[";
+            for (size_t ti = 0; ti < c.pre_triples.size(); ti++) {
+                if (ti) std::cout << ",";
+                const auto& t = c.pre_triples[ti];
+                std::cout << "[" << t.src << "," << t.m1 << "," << t.m2
+                          << "," << t.flow << "]";
+            }
+            std::cout << "],\"ops\":[";
+            for (size_t oi = 0; oi < c.agg_ops.size(); oi++) {
+                if (oi) std::cout << ",";
+                const auto& o = c.agg_ops[oi];
+                std::cout << "[" << o.m1 << "," << o.m2 << ","
+                          << o.pre << "," << o.add << "," << o.post
+                          << "," << (o.was_insertion ? 1 : 0) << "]";
+            }
+            std::cout << "],\"sorted\":[";
+            for (size_t si = 0; si < c.sorted_map.size(); si++) {
+                if (si) std::cout << ",";
+                const auto& s = c.sorted_map[si];
+                std::cout << "[" << s.m1 << "," << s.m2 << ","
+                          << s.flow << "]";
+            }
+            std::cout << "]}";
+        }
+        std::cout << "\n  ";
+    }
+    std::cout << "]\n}\n";
     std::cout.flush();
     std::fflush(stdout);
 

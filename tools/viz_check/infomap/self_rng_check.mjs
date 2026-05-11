@@ -252,6 +252,9 @@ cpp.calls = cppCallsMeta;
 globalThis.window = globalThis;
 globalThis.window.COMDET = { FIXTURE: { nodes: [], edges: [], gt: [] } };
 const WEB = path.join(__dirname, "../../../vltanh.github.io/comdet/js");
+// common.js exposes COMDET.COMMON.MT19937 + Graph (moved out of LOUVAIN
+// 2026-05-10 cross-algo isolation refactor; commit fb4bcc7d).
+await import(path.join(WEB, "common/common.js"));
 await import(path.join(WEB, "louvain/louvain.js"));
 await import(path.join(WEB, "infomap/infomap_canon.js"));
 

@@ -257,6 +257,8 @@ def run_cell(name: str, edge: str, seed: int, sweeps: int, partition: str,
     out_swap = scratch_dir / f"{tag}_cc_swap.csv"
     json_canon = scratch_dir / f"{tag}_cc_canon.json"
     json_swap = scratch_dir / f"{tag}_cc_swap.json"
+    trace_canon = scratch_dir / f"{tag}_cc_canon.trace"
+    trace_swap = scratch_dir / f"{tag}_cc_swap.trace"
 
     # Step 1-3: produce input partition (dispatch on --partition).
     if partition == "sbm-flat-pp":
@@ -289,6 +291,7 @@ def run_cell(name: str, edge: str, seed: int, sweeps: int, partition: str,
         tail = rc.stderr[-400:].decode("utf-8", "replace")
         return name, seed, False, n, K_final, 0, f"cc canon rc={rc.returncode}: {tail}"
     json_canon.write_bytes(rc.stdout)
+    trace_canon.write_bytes(rc.stderr)
 
     # Step 5: CC swapped tracer (vacuous swap for CC; identical output).
     try:
@@ -302,18 +305,31 @@ def run_cell(name: str, edge: str, seed: int, sweeps: int, partition: str,
         tail = rc.stderr[-400:].decode("utf-8", "replace")
         return name, seed, False, n, K_final, 0, f"cc swap rc={rc.returncode}: {tail}"
     json_swap.write_bytes(rc.stdout)
+    trace_swap.write_bytes(rc.stderr)
 
-    # Step 6: byte-equal canon-vs-swap (vacuous for CC).
+    # Step 6: byte-equal canon-vs-swap (vacuous for CC). Trace stream
+    # is also bit-equal: the TRACER_MODE swap is vacuous on CC's path,
+    # only the build=... tag in PIPELINE_START differs, so we strip
+    # that line before the byte compare to keep the contract clean.
     if out_canon.read_bytes() != out_swap.read_bytes():
         return name, seed, False, n, K_final, 0, "cc canon != cc swap (out csv)"
     if json_canon.read_bytes() != json_swap.read_bytes():
         return name, seed, False, n, K_final, 0, "cc canon != cc swap (json)"
 
-    # Step 7: JS replay.
+    def _strip_pipeline_start(b: bytes) -> bytes:
+        return b"\n".join(
+            ln for ln in b.split(b"\n")
+            if not ln.startswith(b"[TRACE-CC] PIPELINE_START")
+        )
+    if (_strip_pipeline_start(trace_canon.read_bytes())
+            != _strip_pipeline_start(trace_swap.read_bytes())):
+        return name, seed, False, n, K_final, 0, "cc canon != cc swap (trace)"
+
+    # Step 7: JS replay with trajectory diff (cpp trace passed as 4th arg).
     try:
         rc = subprocess.run(
             ["node", str(JS_REPLAY), str(json_canon),
-             str(edge_path), str(cc_com)],
+             str(edge_path), str(cc_com), str(trace_canon)],
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
@@ -321,16 +337,31 @@ def run_cell(name: str, edge: str, seed: int, sweeps: int, partition: str,
     log = (rc.stdout + rc.stderr).strip()
     ok = rc.returncode == 0
 
-    # Count CC output records (post-singleton-filter rows, excluding header).
+    # Count CC trajectory records (per-step [TRACE-CC] probe lines in
+    # the canonical stderr trace; mirrors the per-step record floor the
+    # byte-equal-tracer skill §5 calls for). The set is fixed in
+    # tools/viz_check/cc/instrumented/kernel_check.cpp: RIE_EDGE,
+    # CCW_ROOT, CCW_NEIGHS, CCW_VISIT, CCW_MEMBER, CCW_COMP_DONE,
+    # BUCKET, COMP_FLUSH, WCQ_POP.
+    STEP_TAGS = (b"RIE_EDGE", b"CCW_ROOT", b"CCW_NEIGHS", b"CCW_VISIT",
+                 b"CCW_MEMBER", b"CCW_COMP_DONE", b"BUCKET",
+                 b"COMP_FLUSH", b"WCQ_POP")
+    records = 0
     try:
-        with out_canon.open("r") as f:
-            records = sum(1 for _ in f) - 1
+        with trace_canon.open("rb") as f:
+            for ln in f:
+                if not ln.startswith(b"[TRACE-CC] "):
+                    continue
+                tail = ln[len(b"[TRACE-CC] "):].lstrip()
+                if any(tail.startswith(tag) for tag in STEP_TAGS):
+                    records += 1
     except OSError:
         records = 0
 
     # Cleanup on PASS; keep on FAIL for diag.
     if ok:
-        for f in (cc_com, out_canon, out_swap, json_canon, json_swap):
+        for f in (cc_com, out_canon, out_swap, json_canon, json_swap,
+                  trace_canon, trace_swap):
             try: f.unlink()
             except OSError: pass
 

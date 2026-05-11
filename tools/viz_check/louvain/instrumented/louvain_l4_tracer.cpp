@@ -395,6 +395,16 @@ struct Louvain {
 };
 
 // ───────────── Trace records ─────────────────────────────────────
+// Per-candidate gain entry. Captures every comm that participates in the
+// sweep loop body (`for i = 0..neigh_last`), not just the winner. Audit
+// row J site-1 tie-break flips can pass undetected via winner-matching
+// while loser-set differs — per gnm_5000_p002 + arxiv_authors_HepTh
+// closures, the diagnostic only surfaced after retro-fit. P0 probe.
+struct CandRecord {
+    int32_t comm;
+    uint64_t dncBits;    // bits(neigh_weight[comm]) — operand of gain
+    uint64_t gainBits;   // bits(gain(node, comm, dnc, w_degree)) — canonical gain units
+};
 struct VisitRecord {
     int32_t pass;
     int32_t visit;
@@ -413,6 +423,25 @@ struct VisitRecord {
     uint64_t inC_to_bits;
     uint64_t totC_from_bits;
     uint64_t totC_to_bits;
+    // P0 probes (added 2026-05-10 per tracer_coverage_gaps.md):
+    //   kvBits          weighted_degree(node) — direct operand of gain
+    //                   (audit row M / J).
+    //   selfLoopBits    nb_selfloops(node) — modRemove/modInsert summand.
+    //   dncBestBits     neigh_weight[best_comm] — the dnc passed into
+    //                   insert. Distinct from bestIncrease; drove the
+    //                   c4c63ef9 closure on gnm_5000_p002 (audit row F).
+    //   inCfromPreBits  in_[node_comm] BEFORE remove (audit row F + M).
+    //   totCfromPreBits tot_[node_comm] BEFORE remove (audit row F + M).
+    //   candidates[]    per-candidate (comm, dnc, gain) iterated in
+    //                   neigh_pos[0..neigh_last] order = vComm at slot 0
+    //                   + first-seen distinct neighbour comms (audit
+    //                   row J site-1 + row H container-iter).
+    uint64_t kvBits;
+    uint64_t selfLoopBits;
+    uint64_t dncBestBits;
+    uint64_t inCfromPreBits;
+    uint64_t totCfromPreBits;
+    std::vector<CandRecord> candidates;
 };
 struct LevelTrace {
     int32_t level;
@@ -423,6 +452,41 @@ struct LevelTrace {
     std::vector<int32_t> n2c_post;
     // Per-pass quality after each pass completes (bit-equal compare).
     std::vector<uint64_t> quality_per_pass_bits;
+    // P0 probes (added 2026-05-10):
+    //   nb_moves_per_pass  — `nb_moves` counter at end of each pass.
+    //                        Operand B of the do/while gate
+    //                        (`while (nb_moves > 0 && ...)`).
+    //                        Audit row F + tie-break site-2.
+    //   cur_qual_per_pass  — `cur_qual` reset at top of each pass
+    //                        (the gate's left operand:
+    //                        `new_qual - cur_qual > eps_impr`).
+    //                        Audit row F + tie-break site-2. Captures
+    //                        Q at pass entry (= Q_after_previous_pass
+    //                        for passes 2+; = Q_init for pass 1).
+    std::vector<int32_t> nb_moves_per_pass;
+    std::vector<uint64_t> cur_qual_per_pass_bits;
+    // P0 probe #8 (added 2026-05-10): per-level `in_[c]` + `tot_[c]`
+    // full vectors at level ENTRY (post-Modularity-ctor, all-singleton)
+    // and level EXIT (post one_level_trace, pre-renumber +
+    // pre-partition2graph_binary). Audit rows K (snapshot inheritance)
+    // + M (accumulator update) + L (encounter order).
+    //
+    // Length at both boundaries = `qual->size` (== n_before for this
+    // level). At entry, in_[i] = nb_selfloops(i) and tot_[i] =
+    // weighted_degree(i) per Modularity ctor (modularity.cpp:46-50).
+    // At exit, in_/tot_ reflect the cumulative remove/insert sequence
+    // from every pass; comm indices are the pre-renumber singleton ids
+    // (i.e. some entries empty when their constituents moved out).
+    //
+    // Sub-ulp drift in these accumulators that doesn't flip a per-visit
+    // winner can still corrupt Q via `q += in_[i] - tot_[i]^2/m2` —
+    // P1 #9's per-c breakdown gates on these vectors. Closing P0 #8
+    // makes the divergence localizable to a comm id before P1 #9 is
+    // needed.
+    std::vector<uint64_t> in_bits_entry;
+    std::vector<uint64_t> tot_bits_entry;
+    std::vector<uint64_t> in_bits_exit;
+    std::vector<uint64_t> tot_bits_exit;
     // Per-level total_weight (input graph + post-collapse).
     uint64_t total_weight_bits_pre;
     uint64_t total_weight_bits_post;  // 0 if last level.
@@ -454,6 +518,9 @@ static int32_t one_level_trace(Louvain& c, RNG_t& rng, int32_t /*levelIdx*/,
 
     do {
         cur_qual = new_qual;
+        // [TRACE-LV-PASS] cur_qual snapshot at pass entry — operand B of
+        // the do/while gate. Audit row F + tie-break site-2.
+        lvl.cur_qual_per_pass_bits.push_back(bits_of_fp(cur_qual));
         nb_moves = 0;
         nb_pass_done++;
         std::vector<int32_t> visit_order = random_order;
@@ -462,17 +529,36 @@ static int32_t one_level_trace(Louvain& c, RNG_t& rng, int32_t /*levelIdx*/,
             int32_t node = random_order[node_tmp];
             int32_t node_comm = c.qual->n2c[node];
             fp_t    w_degree = c.qual->g.weighted_degree(node);
+            // [TRACE-LV-VISIT-PRE] kv, nb_selfloops, pre-remove in_/tot_.
+            // P0 probes: direct inputs to the modRemove/modInsert/modGain
+            // formulas (audit row M / F / J).
+            fp_t kv_snap        = w_degree;
+            fp_t selfLoop_snap  = c.qual->g.nb_selfloops(node);
+            fp_t inCfromPre     = c.qual->in_[node_comm];
+            fp_t totCfromPre    = c.qual->tot_[node_comm];
             c.neigh_comm(node);
             c.qual->remove(node, node_comm, c.neigh_weight[node_comm]);
             int32_t best_comm = node_comm;
             fp_t    best_nblinks  = fp_t(0);
             fp_t    best_increase = fp_t(0);
+            // [TRACE-LV-CANDS] per-candidate (comm, dnc, gain) iterated
+            // in neigh_pos[0..neigh_last) order. Captures the full
+            // tie-break input space — winner-matching is insufficient
+            // when loser-set differs. Audit row J site-1 + row H.
+            std::vector<CandRecord> cands;
+            cands.reserve(c.neigh_last);
             for (int32_t i = 0; i < c.neigh_last; i++) {
-                fp_t increase = c.qual->gain(node, c.neigh_pos[i],
-                                             c.neigh_weight[c.neigh_pos[i]], w_degree);
+                int32_t cand_c = c.neigh_pos[i];
+                fp_t    dnc    = c.neigh_weight[cand_c];
+                fp_t    increase = c.qual->gain(node, cand_c, dnc, w_degree);
+                CandRecord cr;
+                cr.comm     = cand_c;
+                cr.dncBits  = bits_of_fp(dnc);
+                cr.gainBits = bits_of_fp(increase);
+                cands.push_back(cr);
                 if (increase > best_increase) {
-                    best_comm = c.neigh_pos[i];
-                    best_nblinks = c.neigh_weight[c.neigh_pos[i]];
+                    best_comm = cand_c;
+                    best_nblinks = dnc;
                     best_increase = increase;
                 }
             }
@@ -495,11 +581,22 @@ static int32_t one_level_trace(Louvain& c, RNG_t& rng, int32_t /*levelIdx*/,
             vr.inC_to_bits    = bits_of_fp(c.qual->in_[best_comm]);
             vr.totC_from_bits = bits_of_fp(c.qual->tot_[node_comm]);
             vr.totC_to_bits   = bits_of_fp(c.qual->tot_[best_comm]);
-            lvl.visits.push_back(vr);
+            // [TRACE-LV-VISIT-INPUT] kv + selfloop + pre-remove inC/totC
+            // + bestNblinks. P0 probes for audit rows F + J + M.
+            vr.kvBits          = bits_of_fp(kv_snap);
+            vr.selfLoopBits    = bits_of_fp(selfLoop_snap);
+            vr.dncBestBits     = bits_of_fp(best_nblinks);
+            vr.inCfromPreBits  = bits_of_fp(inCfromPre);
+            vr.totCfromPreBits = bits_of_fp(totCfromPre);
+            vr.candidates      = std::move(cands);
+            lvl.visits.push_back(std::move(vr));
             if (best_comm != node_comm) nb_moves++;
         }
         new_qual = c.qual->quality();
         lvl.quality_per_pass_bits.push_back(bits_of_fp(new_qual));
+        // [TRACE-LV-PASS] nb_moves at pass end — operand A of the gate
+        // (`while (nb_moves > 0 && ...)`). Audit row F.
+        lvl.nb_moves_per_pass.push_back(nb_moves);
         if (nb_moves > 0) improvement = true;
     } while (nb_moves > 0 && new_qual - cur_qual > c.eps_impr);
 
@@ -593,7 +690,26 @@ int main(int argc, char** argv) {
         lvl.total_weight_bits_pre = bits_of_fp(q->g.total_weight);
         lvl.total_weight_bits_post = 0;
         lvl.n_after_collapse = 0;
+        // [TRACE-LV-LEVEL-ADMIN-ENTRY] P0 #8: in_/tot_ vectors at level
+        // entry (Modularity ctor just produced them). Audit row K + M.
+        lvl.in_bits_entry.assign(q->size, 0);
+        lvl.tot_bits_entry.assign(q->size, 0);
+        for (int32_t ci = 0; ci < q->size; ci++) {
+            lvl.in_bits_entry[ci]  = bits_of_fp(q->in_[ci]);
+            lvl.tot_bits_entry[ci] = bits_of_fp(q->tot_[ci]);
+        }
         improvement = (one_level_trace(c, rng, level, lvl) != 0);
+        // [TRACE-LV-LEVEL-ADMIN-EXIT] P0 #8: in_/tot_ vectors at level
+        // exit, AFTER the do/while converges and BEFORE renumber +
+        // partition2graph_binary. Indices still in pre-renumber comm-id
+        // space; some entries empty for comms whose constituents moved
+        // out. Audit row K + M + L.
+        lvl.in_bits_exit.assign(q->size, 0);
+        lvl.tot_bits_exit.assign(q->size, 0);
+        for (int32_t ci = 0; ci < q->size; ci++) {
+            lvl.in_bits_exit[ci]  = bits_of_fp(q->in_[ci]);
+            lvl.tot_bits_exit[ci] = bits_of_fp(q->tot_[ci]);
+        }
         // Snapshot pre-renumber n2c for trace.
         lvl.n2c_post.assign(q->size, 0);
         for (int32_t i = 0; i < q->size; i++) lvl.n2c_post[i] = q->n2c[i];
@@ -711,12 +827,18 @@ int main(int argc, char** argv) {
             if (i) std::cout << ",";
             char hex_g[32], hex_q[32];
             char hex_if[32], hex_it[32], hex_tf[32], hex_tt[32];
+            char hex_kv[32], hex_sl[32], hex_db[32], hex_ifp[32], hex_tfp[32];
             std::snprintf(hex_g, sizeof(hex_g), "0x%016llx", (unsigned long long)vr.dGainBits);
             std::snprintf(hex_q, sizeof(hex_q), "0x%016llx", (unsigned long long)vr.dQbits);
             std::snprintf(hex_if, sizeof(hex_if), "0x%016llx", (unsigned long long)vr.inC_from_bits);
             std::snprintf(hex_it, sizeof(hex_it), "0x%016llx", (unsigned long long)vr.inC_to_bits);
             std::snprintf(hex_tf, sizeof(hex_tf), "0x%016llx", (unsigned long long)vr.totC_from_bits);
             std::snprintf(hex_tt, sizeof(hex_tt), "0x%016llx", (unsigned long long)vr.totC_to_bits);
+            std::snprintf(hex_kv, sizeof(hex_kv), "0x%016llx", (unsigned long long)vr.kvBits);
+            std::snprintf(hex_sl, sizeof(hex_sl), "0x%016llx", (unsigned long long)vr.selfLoopBits);
+            std::snprintf(hex_db, sizeof(hex_db), "0x%016llx", (unsigned long long)vr.dncBestBits);
+            std::snprintf(hex_ifp, sizeof(hex_ifp), "0x%016llx", (unsigned long long)vr.inCfromPreBits);
+            std::snprintf(hex_tfp, sizeof(hex_tfp), "0x%016llx", (unsigned long long)vr.totCfromPreBits);
             std::cout << "{\"pass\":" << vr.pass
                       << ",\"visit\":" << vr.visit
                       << ",\"v\":" << vr.node
@@ -728,7 +850,24 @@ int main(int argc, char** argv) {
                       << ",\"inCfromBits\":\"" << hex_if << "\""
                       << ",\"inCtoBits\":\"" << hex_it << "\""
                       << ",\"totCfromBits\":\"" << hex_tf << "\""
-                      << ",\"totCtoBits\":\"" << hex_tt << "\"}";
+                      << ",\"totCtoBits\":\"" << hex_tt << "\""
+                      << ",\"kvBits\":\"" << hex_kv << "\""
+                      << ",\"selfLoopBits\":\"" << hex_sl << "\""
+                      << ",\"dncBestBits\":\"" << hex_db << "\""
+                      << ",\"inCfromPreBits\":\"" << hex_ifp << "\""
+                      << ",\"totCfromPreBits\":\"" << hex_tfp << "\""
+                      << ",\"candidates\":[";
+            for (size_t ck = 0; ck < vr.candidates.size(); ck++) {
+                if (ck) std::cout << ",";
+                const CandRecord& cr = vr.candidates[ck];
+                char hex_cd[32], hex_cg[32];
+                std::snprintf(hex_cd, sizeof(hex_cd), "0x%016llx", (unsigned long long)cr.dncBits);
+                std::snprintf(hex_cg, sizeof(hex_cg), "0x%016llx", (unsigned long long)cr.gainBits);
+                std::cout << "{\"c\":" << cr.comm
+                          << ",\"dncBits\":\"" << hex_cd << "\""
+                          << ",\"gainBits\":\"" << hex_cg << "\"}";
+            }
+            std::cout << "]}";
         }
         std::cout << "],";
         std::cout << "\"n2c_post\":[";
@@ -743,6 +882,58 @@ int main(int argc, char** argv) {
             char hex_qp[32];
             std::snprintf(hex_qp, sizeof(hex_qp), "0x%016llx", (unsigned long long)lv.quality_per_pass_bits[i]);
             std::cout << "\"" << hex_qp << "\"";
+        }
+        std::cout << "],";
+        // [TRACE-LV-PASS] new emit: cur_qual + nb_moves per pass.
+        // Audit row F + tie-break site-2 operands.
+        std::cout << "\"curQualPerPassBits\":[";
+        for (size_t i = 0; i < lv.cur_qual_per_pass_bits.size(); i++) {
+            if (i) std::cout << ",";
+            char hex_cq[32];
+            std::snprintf(hex_cq, sizeof(hex_cq), "0x%016llx", (unsigned long long)lv.cur_qual_per_pass_bits[i]);
+            std::cout << "\"" << hex_cq << "\"";
+        }
+        std::cout << "],";
+        std::cout << "\"nbMovesPerPass\":[";
+        for (size_t i = 0; i < lv.nb_moves_per_pass.size(); i++) {
+            if (i) std::cout << ",";
+            std::cout << lv.nb_moves_per_pass[i];
+        }
+        std::cout << "],";
+        // [TRACE-LV-LEVEL-ADMIN-ENTRY/EXIT] P0 #8 emit. Per-level
+        // in_[c] + tot_[c] vectors as hex-bit arrays. Index range
+        // 0..n_before-1; both arrays bit-identical at entry under
+        // singleton init = (nb_selfloops(c), weighted_degree(c)).
+        std::cout << "\"inBitsEntry\":[";
+        for (size_t i = 0; i < lv.in_bits_entry.size(); i++) {
+            if (i) std::cout << ",";
+            char hex_b[32];
+            std::snprintf(hex_b, sizeof(hex_b), "0x%016llx", (unsigned long long)lv.in_bits_entry[i]);
+            std::cout << "\"" << hex_b << "\"";
+        }
+        std::cout << "],";
+        std::cout << "\"totBitsEntry\":[";
+        for (size_t i = 0; i < lv.tot_bits_entry.size(); i++) {
+            if (i) std::cout << ",";
+            char hex_b[32];
+            std::snprintf(hex_b, sizeof(hex_b), "0x%016llx", (unsigned long long)lv.tot_bits_entry[i]);
+            std::cout << "\"" << hex_b << "\"";
+        }
+        std::cout << "],";
+        std::cout << "\"inBitsExit\":[";
+        for (size_t i = 0; i < lv.in_bits_exit.size(); i++) {
+            if (i) std::cout << ",";
+            char hex_b[32];
+            std::snprintf(hex_b, sizeof(hex_b), "0x%016llx", (unsigned long long)lv.in_bits_exit[i]);
+            std::cout << "\"" << hex_b << "\"";
+        }
+        std::cout << "],";
+        std::cout << "\"totBitsExit\":[";
+        for (size_t i = 0; i < lv.tot_bits_exit.size(); i++) {
+            if (i) std::cout << ",";
+            char hex_b[32];
+            std::snprintf(hex_b, sizeof(hex_b), "0x%016llx", (unsigned long long)lv.tot_bits_exit[i]);
+            std::cout << "\"" << hex_b << "\"";
         }
         std::cout << "],";
         char hex_twp[32], hex_tw2[32];

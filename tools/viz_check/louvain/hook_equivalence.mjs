@@ -35,6 +35,13 @@ globalThis.window = globalThis;
 globalThis.window.COMDET = { FIXTURE: { nodes: [], edges: [], gt: [] } };
 const LOUVAIN_JS = process.env.LOUVAIN_JS
   || path.join(__dirname, "../../../vltanh.github.io/comdet/js/louvain/louvain.js");
+// Cross-algo isolation refactor (2026-05-10): louvain.js consumes
+// MT19937/Graph/shuffle/range from COMDET.COMMON. Resolve alongside.
+const COMMON_JS = process.env.COMMON_JS
+  || path.join(path.dirname(LOUVAIN_JS), "../common/common.js");
+if (fs.existsSync(COMMON_JS)) {
+  await import(COMMON_JS);
+}
 await import(LOUVAIN_JS);
 
 function bits(x) {
@@ -66,7 +73,8 @@ const { n, edges } = readEdgeCsv(edgePath);
 
 function runLouvain(opts) {
   const Q = COMDET.LOUVAIN.Modularity();
-  const G = COMDET.LOUVAIN.Graph(n, edges, { correctSelfLoops: false, sortAdj: true });
+  const GraphFactory = (COMDET.COMMON && COMDET.COMMON.Graph) || COMDET.LOUVAIN.Graph;
+  const G = GraphFactory(n, edges, { correctSelfLoops: false, sortAdj: true });
   return COMDET.LOUVAIN.run(G, Q, seed, opts);
 }
 

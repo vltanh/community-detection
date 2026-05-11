@@ -3,9 +3,17 @@
 // Runs JS COMDET.SBM.mcmcSweep WITHOUT proposalOracle / visitOrder, seeded
 // with the same value as the cpp tracer. Asserts:
 //   - S_init bit-equal vs cpp.
-//   - Per-visit (toS, dS, accept) bit-equal vs cpp.
+//   - Per-visit (v, toS, pickIdx, dS, subsetSE_before/after,
+//     acceptU, expArg, expVal, accept) bit-equal vs cpp.
 //   - Per-sweep S_post bit-equal vs cpp.
+//   - Per-sweep S_post_breakdown component-wise bit-equal vs cpp.
 //   - Final per-block membership byte-equal vs cpp.
+//
+// Per-visit probes mirror cpp flat_traced.cpp `[TRACE-SBM-PICKIDX]` /
+// `[TRACE-SBM-SUBSETSE]` / `[TRACE-SBM-ACCEPT-FP]` emit sites. Per-sweep
+// breakdown mirrors `[TRACE-SBM-BRK]`. Closes gap-audit P0 items 1, 2,
+// 3, 5 + (nested) items 6, 8, 10, 11 — see
+// memory/community-detection/sbm/tracer_coverage_gaps.md.
 //
 // This is the random/deterministic separation's "self-random" leg: JS uses
 // its own MT19937 + intRange + shuffle. cpp tracer uses a matching JSRng
@@ -53,6 +61,39 @@ function bitsOf(x) {
   return new BigUint64Array(b.buffer)[0];
 }
 
+// [TRACE-SBM-BRK] component-wise breakdown bit-compare. Returns count
+// of bit-mismatching summands (max 7).
+function diffBreakdown(jsBrk, cppBrk) {
+  let n = 0;
+  for (const k of ["exact", "edges_dl", "dc_deg_const",
+                   "partition_dl", "degree_dl", "pp_lik", "pp_edges"]) {
+    if (bitsOf(jsBrk[k] || 0) !== bitsOf(cppBrk[k] || 0)) n++;
+  }
+  return n;
+}
+
+// [TRACE-SBM-REBUILD] post-rebuild dump bit-compare. Verifies each
+// upper-level rebuilt graph matches cpp on N + E + nonEmpty[] + init[]
+// + strength[] + post-rebuild Bne + S + breakdown (closes gap-audit
+// items 6, 7, 10).
+function diffRebuild(jsR, cppR) {
+  let m = 0;
+  if (jsR.N !== cppR.N) m++;
+  if (bitsOf(jsR.E) !== bitsOf(cppR.E)) m++;
+  if (jsR.nonEmpty.length !== cppR.nonEmpty.length) m++;
+  else for (let i = 0; i < jsR.nonEmpty.length; i++)
+    if (jsR.nonEmpty[i] !== cppR.nonEmpty[i]) { m++; break; }
+  if (jsR.init.length !== cppR.init.length) m++;
+  else for (let i = 0; i < jsR.init.length; i++)
+    if (jsR.init[i] !== cppR.init[i]) { m++; break; }
+  if (jsR.strength.length !== cppR.strength.length) m++;
+  else for (let i = 0; i < jsR.strength.length; i++)
+    if (bitsOf(jsR.strength[i]) !== bitsOf(cppR.strength[i])) { m++; break; }
+  if (jsR.Bne_post_rebuild !== cppR.Bne_post_rebuild) m++;
+  if (bitsOf(jsR.S_post_rebuild) !== bitsOf(cppR.S_post_rebuild)) m++;
+  return m;
+}
+
 const renum = trace.renum_to_orig;
 const N = renum.length;
 const edges = loadEdges(edgePath, renum);
@@ -70,10 +111,16 @@ function checkFlat() {
   if (!sInitOk) process.exit(1);
 
   let visits = 0, dsMm = 0, toMm = 0, accMm = 0, voMm = 0, spostMm = 0;
+  let pickMm = 0, subBefMm = 0, subAftMm = 0, auMm = 0, expArgMm = 0, expValMm = 0;
+  let brkMm = 0;
+  // [TRACE-SBM-DRAWS] gap-audit item 4 (row B). Per-visit raw() delta
+  // bit-compare. cpp emits `rng_draws` per visit; JS records its own
+  // `rng_draws` via rng.drawCount() in mcmc.js when `recordProbes` is on.
+  let drawMm = 0;
   for (let sw = 0; sw < trace.sweeps.length; sw++) {
     const swT = trace.sweeps[sw];
     const out = COMDET.SBM.mcmcSweep(state, RNG, {
-      recordTrace: true, beta: trace.beta,
+      recordTrace: true, recordProbes: true, beta: trace.beta,
     });
     if (out.traces.length !== swT.visits.length) {
       console.error(`sweep ${sw}: visits length mismatch`);
@@ -84,20 +131,41 @@ function checkFlat() {
       const t = swT.visits[i], j = out.traces[i];
       if (j.v !== t.v) voMm++;
       if (j.toS !== t.toS) toMm++;
+      if (j.pickIdx !== t.pickIdx) pickMm++;
       if (bitsOf(j.dS) !== bitsOf(t.dS)) dsMm++;
+      if (bitsOf(j.subsetSE_before) !== bitsOf(t.subsetSE_before)) subBefMm++;
+      if (bitsOf(j.subsetSE_after)  !== bitsOf(t.subsetSE_after))  subAftMm++;
+      if (bitsOf(j.acceptU) !== bitsOf(t.acceptU)) auMm++;
+      if (bitsOf(j.expArg)  !== bitsOf(t.expArg))  expArgMm++;
+      if (bitsOf(j.expVal)  !== bitsOf(t.expVal))  expValMm++;
       if (j.accept !== t.accept) accMm++;
+      if (t.rng_draws !== undefined && j.rng_draws !== t.rng_draws) drawMm++;
     }
     const sjp = state.entropy(), scp = swT.S_post;
     if (bitsOf(sjp) !== bitsOf(scp)) spostMm++;
+    // [TRACE-SBM-BRK] per-sweep breakdown bit-compare.
+    if (swT.S_post_breakdown) {
+      const jsBrk = state.entropyBreakdown();
+      brkMm += diffBreakdown(jsBrk, swT.S_post_breakdown);
+    }
   }
   console.log(
     `flat ${mode}: visits=${visits} ` +
     `visit-order-mismatches=${voMm} ` +
     `toS-mismatches=${toMm} ` +
+    `pickIdx-mismatches=${pickMm} ` +
     `dS-bit-mismatches=${dsMm} ` +
+    `subsetSE_before-bit-mismatches=${subBefMm} ` +
+    `subsetSE_after-bit-mismatches=${subAftMm} ` +
+    `acceptU-bit-mismatches=${auMm} ` +
+    `expArg-bit-mismatches=${expArgMm} ` +
+    `expVal-bit-mismatches=${expValMm} ` +
     `accept-mismatches=${accMm} ` +
-    `S_post-bit-mismatches=${spostMm}/${trace.sweeps.length}`);
-  const total = voMm + toMm + dsMm + accMm + spostMm;
+    `rng_draws-mismatches=${drawMm} ` +
+    `S_post-bit-mismatches=${spostMm}/${trace.sweeps.length} ` +
+    `S_post_breakdown-summand-mismatches=${brkMm}`);
+  const total = voMm + toMm + pickMm + dsMm + subBefMm + subAftMm
+              + auMm + expArgMm + expValMm + accMm + drawMm + spostMm + brkMm;
   if (total > 0) process.exit(1);
 }
 
@@ -112,12 +180,28 @@ function checkNested() {
   }
   const RNG = COMDET.SBM.MT19937(seed);
   let visits = 0, dsMm = 0, toMm = 0, accMm = 0, voMm = 0;
+  let pickMm = 0, subBefMm = 0, subAftMm = 0, auMm = 0, expArgMm = 0, expValMm = 0;
+  // [TRACE-SBM-DRAWS] per-visit raw() delta bit-compare on nested.
+  let drawMm = 0;
+  // [TRACE-SBM-LEVEL] + [TRACE-SBM-REBUILD] nested-side bit-compare.
+  // Closes gap-audit items 6, 8, 11 (level S_post per sweep + rebuild
+  // dumps bit-equal vs cpp).
+  let lvlSPostMm = 0, rebuildMm = 0, sPostMm = 0, brkMm = 0;
+  // [TRACE-SBM-LEVEL-MEMB] gap-audit item 9: per-sweep level membership
+  // bit-compare. Surfaces divergence at sweep k>0 on level l>0 that the
+  // end-state `level_final_membership` only catches transitively.
+  let lvlMembMm = 0;
   for (let sw = 0; sw < trace.sweeps.length; sw++) {
     const swT = trace.sweeps[sw];
     for (let li = 0; li < swT.levels.length; li++) {
-      const lvl = swT.levels[li], l = lvl.level;
+      const levelEntry = swT.levels[li];
+      // Backward-compat: older traces stored runSweep payload directly
+      // at the level entry; new traces wrap in `sweep_payload` so a
+      // sibling `rebuilds` array can ride alongside. Accept both.
+      const lvl = levelEntry.sweep_payload || levelEntry;
+      const l = lvl.level;
       const out = COMDET.SBM.mcmcSweep(states[l], RNG, {
-        recordTrace: true, beta: trace.beta,
+        recordTrace: true, recordProbes: true, beta: trace.beta,
       });
       if (out.traces.length !== lvl.visits.length) {
         console.error(`sweep ${sw} level ${l}: visits length mismatch`);
@@ -128,13 +212,65 @@ function checkNested() {
         const t = lvl.visits[i], j = out.traces[i];
         if (j.v !== t.v) voMm++;
         if (j.toS !== t.toS) toMm++;
+        if (j.pickIdx !== t.pickIdx) pickMm++;
         if (bitsOf(j.dS) !== bitsOf(t.dS)) dsMm++;
+        if (bitsOf(j.subsetSE_before) !== bitsOf(t.subsetSE_before)) subBefMm++;
+        if (bitsOf(j.subsetSE_after)  !== bitsOf(t.subsetSE_after))  subAftMm++;
+        if (bitsOf(j.acceptU) !== bitsOf(t.acceptU)) auMm++;
+        if (bitsOf(j.expArg)  !== bitsOf(t.expArg))  expArgMm++;
+        if (bitsOf(j.expVal)  !== bitsOf(t.expVal))  expValMm++;
         if (j.accept !== t.accept) accMm++;
+        if (t.rng_draws !== undefined && j.rng_draws !== t.rng_draws) drawMm++;
       }
-      for (let up = l + 1; up < states.length; up++) {
+      // [TRACE-SBM-LEVEL] / [TRACE-SBM-BRK]: per-level S_post + breakdown
+      // immediately after this level's sweep (before rebuilds).
+      const sjLevel = states[l].entropy();
+      if (bitsOf(sjLevel) !== bitsOf(lvl.S_post)) sPostMm++;
+      if (lvl.S_post_breakdown) {
+        brkMm += diffBreakdown(states[l].entropyBreakdown(),
+                               lvl.S_post_breakdown);
+      }
+      // [TRACE-SBM-REBUILD]: rebuild dump compare for each up-level.
+      const rebuilds = levelEntry.rebuilds || [];
+      for (let ri = 0; ri < rebuilds.length; ri++) {
+        const cppR = rebuilds[ri];
+        const up = cppR.up;
         const built = COMDET.SBM.buildLevelGraph(graphs[up-1], states[up-1], hier[up]);
         graphs[up] = built.graph;
         states[up] = COMDET.SBM.BlockState(built.graph, { mode: "ndc", init: built.init });
+        // Collect probe data from the rebuilt graph + fresh state.
+        const ne = states[up-1].nonEmptyBlocks();
+        // graph.totalEdgeWeight() = sum of edge weights = cpp's g.E
+        // accumulator. Mirrors block_state.js:30 reading.
+        const E = built.graph.totalEdgeWeight();
+        const strength = new Array(built.graph.vcount());
+        for (let i = 0; i < strength.length; i++)
+          strength[i] = built.graph.strength(i);
+        const initArr = Array.from(built.init);
+        const nonEmptyArr = Array.from(ne);
+        const jsR = {
+          N: built.graph.vcount(), E: E,
+          nonEmpty: nonEmptyArr, init: initArr, strength: strength,
+          Bne_post_rebuild: states[up].nonEmptyBlocks().length,
+          S_post_rebuild: states[up].entropy(),
+        };
+        rebuildMm += diffRebuild(jsR, cppR);
+      }
+    }
+    // [TRACE-SBM-LEVEL]: per-sweep level_S_post array.
+    if (swT.level_S_post) {
+      for (let l = 0; l < swT.level_S_post.length; l++) {
+        if (bitsOf(states[l].entropy()) !== bitsOf(swT.level_S_post[l]))
+          lvlSPostMm++;
+      }
+    }
+    // [TRACE-SBM-LEVEL-MEMB]: per-sweep level membership bit-compare.
+    if (swT.level_membership) {
+      for (let l = 0; l < swT.level_membership.length; l++) {
+        const cppMb = swT.level_membership[l];
+        for (let v = 0; v < cppMb.length; v++) {
+          if (states[l].blockOf(v) !== cppMb[v]) { lvlMembMm++; break; }
+        }
       }
     }
   }
@@ -142,9 +278,24 @@ function checkNested() {
     `nested ${mode}: visits=${visits} ` +
     `visit-order-mismatches=${voMm} ` +
     `toS-mismatches=${toMm} ` +
+    `pickIdx-mismatches=${pickMm} ` +
     `dS-bit-mismatches=${dsMm} ` +
-    `accept-mismatches=${accMm}`);
-  if (voMm + toMm + dsMm + accMm > 0) process.exit(1);
+    `subsetSE_before-bit-mismatches=${subBefMm} ` +
+    `subsetSE_after-bit-mismatches=${subAftMm} ` +
+    `acceptU-bit-mismatches=${auMm} ` +
+    `expArg-bit-mismatches=${expArgMm} ` +
+    `expVal-bit-mismatches=${expValMm} ` +
+    `accept-mismatches=${accMm} ` +
+    `rng_draws-mismatches=${drawMm} ` +
+    `level_S_post-bit-mismatches=${lvlSPostMm} ` +
+    `level_membership-mismatches=${lvlMembMm} ` +
+    `S_post-immediate-bit-mismatches=${sPostMm} ` +
+    `S_post_breakdown-summand-mismatches=${brkMm} ` +
+    `rebuild-field-mismatches=${rebuildMm}`);
+  const total = voMm + toMm + pickMm + dsMm + subBefMm + subAftMm
+              + auMm + expArgMm + expValMm + accMm + drawMm
+              + lvlSPostMm + lvlMembMm + sPostMm + brkMm + rebuildMm;
+  if (total > 0) process.exit(1);
 }
 
 if (nestedFlag) checkNested();

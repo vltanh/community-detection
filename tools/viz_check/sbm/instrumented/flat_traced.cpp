@@ -44,17 +44,25 @@ namespace {
 // JS's rng.int(lo, hi).
 struct JSRng {
     std::mt19937 mt;
+    // [TRACE-SBM-DRAWS] gap-audit item 4 (row B). Per-call raw()
+    // draw counter. intRange consumes 1 + rejection-loop draws;
+    // acceptUniform consumes 1; the explicit count is the L1 ladder
+    // instrument that lets the harness localize "at visit k cpp drew
+    // N raws, JS drew M" before the trajectory diverges. Subsumed by
+    // L4 transitively (count drift surfaces as toS/pickIdx mismatch a
+    // few visits downstream), but now directly emitted per visit.
+    uint64_t drawCount = 0;
     explicit JSRng(uint32_t s) : mt(s) {}
-    uint32_t raw() { return mt(); }
+    uint32_t raw() { ++drawCount; return mt(); }
     int32_t intRange(int32_t lo, int32_t hi) {
         int64_t range = (int64_t)hi - (int64_t)lo + 1;
         if (range <= 0) return lo;
         uint64_t limit = (0x100000000ULL / (uint64_t)range) * (uint64_t)range;
         uint32_t r;
-        do { r = mt(); } while ((uint64_t)r >= limit);
+        do { ++drawCount; r = mt(); } while ((uint64_t)r >= limit);
         return lo + (int32_t)(r % (uint64_t)range);
     }
-    double acceptUniform() { return (double)mt() / 4294967296.0; }
+    double acceptUniform() { ++drawCount; return (double)mt() / 4294967296.0; }
 };
 
 // JS Fisher-Yates: idx = n-1 .. 1, j = int(0, idx), swap(arr[idx], arr[j]).
@@ -741,6 +749,24 @@ struct BlockState {
         moveVertex(v, fromR);
         return after - before;
     }
+
+    // [TRACE-SBM-SUBSETSE] Probe-aware virtualMove for the byte-equal
+    // tracer. Mirrors `virtualMove(v, s)` step-for-step but returns the
+    // before/after subsetSE scalars in addition to dS. Sites: skill
+    // byte-equal-tracer gap audit item 2 (rows D/E/M). When dS bits
+    // diverge between cpp and JS, harness can bisect into `before`
+    // vs `after` (and onwards into the four summands subsetEntropy +
+    // edgesDlSubset + partitionDlSubset + degreeDlSubset/ppSubset).
+    struct VirtualMoveTrace { double dS, before, after; };
+    VirtualMoveTrace virtualMoveTraced(int v, int s) {
+        if (s == b[v]) return {0.0, 0.0, 0.0};
+        int fromR = b[v];
+        double before = subsetSE(fromR, s);
+        moveVertex(v, s);
+        double after = subsetSE(fromR, s);
+        moveVertex(v, fromR);
+        return {after - before, before, after};
+    }
 };
 
 // ── candidatePool ───────────────────────────────────────────────────
@@ -944,19 +970,45 @@ int runSweep(BlockState& st, JSRng& rng, double beta,
         int v = order[i];
         int fromR = st.blockOf(v);
         candidatePool(st, v, cands);
+        // [TRACE-SBM-DRAWS] gap-audit item 4 (row B). Snapshot draw
+        // counter at visit entry so we can emit the per-visit raw()
+        // delta. JS mirror compares its own per-visit delta on the
+        // self-RNG leg.
+        uint64_t drawsBefore = rng.drawCount;
+        // [TRACE-SBM-PICKIDX] gap-audit item 5 (rows C, J). pickIdx is
+        // the rng.intRange output that maps the uniform draw to a cand
+        // slot; toS = cands[pickIdx] is then derived. Emitting pickIdx
+        // separates "cands ordering shifted" (toS divergence with
+        // matching pickIdx) from "RNG distribution mapping drifted"
+        // (pickIdx divergence with matching cands).
         int pickIdx = rng.intRange(0, (int)cands.size() - 1);
         int toS = cands[pickIdx];
-        double dS = (toS == fromR) ? 0.0 : st.virtualMove(v, toS);
+        // [TRACE-SBM-SUBSETSE] gap-audit item 2 (row M). Capture
+        // subsetSE before/after via virtualMoveTraced so dS bisection
+        // is possible without re-emitting the running BlockState.
+        double dS = 0.0, subsetBefore = 0.0, subsetAfter = 0.0;
+        if (toS != fromR) {
+            auto vm = st.virtualMoveTraced(v, toS);
+            dS = vm.dS; subsetBefore = vm.before; subsetAfter = vm.after;
+        }
         // JS short-circuits accept when dS <= 0 and never draws the
         // uniform; cpp must mirror exactly so the MT19937 state stays
         // aligned for any downstream RNG consumer running standalone.
+        // [TRACE-SBM-ACCEPT-FP] gap-audit item 3 (rows D, F). expArg
+        // and expVal are the FP-primitive intermediates between dS and
+        // accept; emitting them separates jsExp ulp drift from
+        // acceptUniform draw drift when accept diverges on a dS>0 step.
         double acceptU = 0.0;
+        double expArg = 0.0;
+        double expVal = 1.0;
         bool accept;
         if (dS <= 0.0) {
             accept = true;
         } else {
             acceptU = rng.acceptUniform();
-            accept = (acceptU < trace_exp(-beta * dS));
+            expArg = -beta * dS;
+            expVal = trace_exp(expArg);
+            accept = (acceptU < expVal);
         }
         bool committed = accept && (toS != fromR);
         if (committed) { st.moveVertex(v, toS); ++sweepAccepted; }
@@ -964,18 +1016,45 @@ int runSweep(BlockState& st, JSRng& rng, double beta,
         o << "{\"v\":" << v
           << ",\"fromR\":" << fromR
           << ",\"toS\":" << toS
+          << ",\"pickIdx\":" << pickIdx
           << ",\"cands\":";
         emitIntArray(o, cands);
         o << ",\"dS\":";
         em.writeDouble(dS);
+        o << ",\"subsetSE_before\":";
+        em.writeDouble(subsetBefore);
+        o << ",\"subsetSE_after\":";
+        em.writeDouble(subsetAfter);
         o << ",\"acceptU\":";
         em.writeDouble(acceptU);
+        o << ",\"expArg\":";
+        em.writeDouble(expArg);
+        o << ",\"expVal\":";
+        em.writeDouble(expVal);
         o << ",\"accept\":" << (accept ? "true" : "false")
           << ",\"moved\":" << (committed ? "true" : "false")
+          << ",\"rng_draws\":" << (rng.drawCount - drawsBefore)
           << "}";
     }
     o << "],\"S_post\":";
     em.writeDouble(st.entropy());
+    // [TRACE-SBM-BRK] gap-audit item 1 (rows D, E, M). After each
+    // sweep emit the same entropyBreakdown that init dumps once. When
+    // S_post bits diverge between cpp and JS, harness can bisect
+    // straight into the divergent summand (exact / edges_dl / dc_deg_const
+    // / partition_dl / degree_dl / pp_lik / pp_edges) without rerunning.
+    {
+        auto eb = st.entropyBreakdown();
+        o << ",\"S_post_breakdown\":{\"exact\":";
+        em.writeDouble(eb.exact);
+        o << ",\"edges_dl\":";  em.writeDouble(eb.edges_dl);
+        o << ",\"dc_deg_const\":"; em.writeDouble(eb.dc_deg_const);
+        o << ",\"partition_dl\":"; em.writeDouble(eb.partition_dl);
+        o << ",\"degree_dl\":";  em.writeDouble(eb.degree_dl);
+        o << ",\"pp_lik\":";     em.writeDouble(eb.pp_lik);
+        o << ",\"pp_edges\":";   em.writeDouble(eb.pp_edges);
+        o << "}";
+    }
     o << ",\"accepted\":" << sweepAccepted
       << ",\"Bne_post\":" << st.Bne
       << "}";
@@ -1058,6 +1137,10 @@ int runNested(const Args& args, Mode mode, Graph& g0,
         o << "{\"sweep\":" << sw << ",\"levels\":[";
         for (int l = 0; l < L; ++l) {
             if (l) o << ",";
+            // Wrap each level body in its own object so we can attach
+            // the runSweep payload + a sibling [TRACE-SBM-REBUILD]
+            // probe array describing every upper-level rebuilt graph.
+            o << "{\"sweep_payload\":";
             totalAccepted += runSweep(*states[l], rng, args.beta, cands, order,
                                       em, o, {"level", l});
             // Propagate updated e_rs to upper levels. virtualMove's
@@ -1065,12 +1148,82 @@ int runNested(const Args& args, Mode mode, Graph& g0,
             // move is committed, which percolates into the cand pools
             // via candidatePool's nonEmptyBlocks slice; rebuild
             // unconditionally to keep cpp + JS replay byte-equal.
+            o << ",\"rebuilds\":[";
+            bool firstRebuild = true;
             for (int up = l + 1; up < L; ++up) {
                 LevelGraph rebuilt = buildLevelGraph(*graphs[up - 1], *states[up - 1],
                                                     hierarchy[up]);
+                // [TRACE-SBM-REBUILD] gap-audit items 6, 7, 10 (rows
+                // H, I, K, L). Dump the rebuilt level graph + init
+                // membership + the remap[] table before constructing
+                // a fresh BlockState. nonEmpty[] = encounter-order of
+                // parent's neList prefix (row L); remap[] = position
+                // table indexed by parent block id (row L literal
+                // site flat_traced.cpp:793-794); rebuilt N/E/edges
+                // probe per-rebuild aggregation invariants.
+                if (!firstRebuild) o << ",";
+                firstRebuild = false;
+                o << "{\"up\":" << up
+                  << ",\"N\":" << rebuilt.g.N
+                  << ",\"E\":"; em.writeDouble(rebuilt.g.E);
+                o << ",\"nonEmpty\":";
+                emitIntArray(o, rebuilt.nonEmpty);
+                o << ",\"init\":";
+                emitIntArray(o, rebuilt.init);
+                // Strength array (per parent-block i, doubled-self-loop
+                // strength). Bit-equal probe for row H (encounter-order)
+                // + row I (self-loop convention) at every level.
+                o << ",\"strength\":[";
+                for (int i = 0; i < rebuilt.g.N; ++i) {
+                    if (i) o << ",";
+                    em.writeDouble(rebuilt.g.strength[i]);
+                }
+                o << "]";
+                // Construct fresh BlockState; emit its post-rebuild
+                // Bne + level entropy + breakdown so harness has the
+                // bit-equal anchor *immediately* after the rebuild,
+                // not just at end-of-sweep.
                 graphs[up].reset(new Graph(std::move(rebuilt.g)));
                 states[up].reset(new BlockState(*graphs[up], Mode::NDC, rebuilt.init));
+                o << ",\"Bne_post_rebuild\":" << states[up]->Bne
+                  << ",\"S_post_rebuild\":";
+                em.writeDouble(states[up]->entropy());
+                auto eb = states[up]->entropyBreakdown();
+                o << ",\"S_post_rebuild_breakdown\":{\"exact\":";
+                em.writeDouble(eb.exact);
+                o << ",\"edges_dl\":";  em.writeDouble(eb.edges_dl);
+                o << ",\"partition_dl\":"; em.writeDouble(eb.partition_dl);
+                o << ",\"degree_dl\":";  em.writeDouble(eb.degree_dl);
+                o << "}";
+                o << "}";
             }
+            o << "]}";
+        }
+        // [TRACE-SBM-LEVEL] gap-audit item 8 (rows K, M). Per-level
+        // S_post snapshot at the close of each sweep. Lets harness
+        // bisect "which level's entropy drifted" when total S_post
+        // diverges, without rerunning per-level.
+        o << "],\"level_S_post\":[";
+        for (int l = 0; l < L; ++l) {
+            if (l) o << ",";
+            em.writeDouble(states[l]->entropy());
+        }
+        // [TRACE-SBM-LEVEL-MEMB] gap-audit item 9 (rows H, K, L). Per-
+        // sweep snapshot of every level's membership vector (`b[]`).
+        // Without this, divergence at sweep k>0 on level l>0 is only
+        // visible via end-state `level_final_membership`. Emitting per
+        // sweep lets the harness bit-compare the cumulative cluster
+        // labels at any (sweep, level) tuple. Mirrors the per-sweep
+        // S_post array above but at integer rather than double width.
+        o << "],\"level_membership\":[";
+        for (int l = 0; l < L; ++l) {
+            if (l) o << ",";
+            o << "[";
+            for (int v = 0; v < states[l]->N; ++v) {
+                if (v) o << ",";
+                o << states[l]->b[v];
+            }
+            o << "]";
         }
         o << "],\"S_post\":";
         em.writeDouble(totalEntropy());

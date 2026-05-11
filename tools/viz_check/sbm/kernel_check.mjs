@@ -182,7 +182,12 @@ if (nestedFlag) {
   for (let sw = 0; sw < trace.sweeps.length; sw++) {
     const swTrace = trace.sweeps[sw];
     for (let li = 0; li < swTrace.levels.length; li++) {
-      const lvl = swTrace.levels[li];
+      const levelEntry = swTrace.levels[li];
+      // [TRACE-SBM-REBUILD] format change 2026-05-10: nested level
+      // entries now wrap the runSweep payload in `sweep_payload` so a
+      // sibling `rebuilds` array can ride alongside. Accept both old
+      // (raw payload) and new (wrapped) traces.
+      const lvl = levelEntry.sweep_payload || levelEntry;
       const l = lvl.level;
       replaySweep(states[l], lvl, trace.beta, `sweep ${sw} level ${l}`, agg);
       // Propagate updated e_rs to upper levels (mirrors cpp's runNested).

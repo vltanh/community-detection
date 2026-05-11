@@ -27,7 +27,7 @@ const ORDER = [
   "mutable_graph.js", "cactus_graph.js",
   "balanced_cut_dfs.js", "most_balanced.js",
   "minimum_cut_helpers.js", "contract_graph.js", "contraction_tests.js",
-  "scc.js", "noi_minimum_cut.js", "viecut_heuristic.js",
+  "scc.js", "label_propagation.js", "noi_minimum_cut.js", "viecut_heuristic.js",
   "push_relabel.js", "heavy_edges.js", "graph_modification.js",
   "recursive_cactus.js", "cactus_mincut.js", "mincut_adapter.js", "index.js",
 ];

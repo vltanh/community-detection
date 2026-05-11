@@ -272,8 +272,8 @@ def viecut_one_subgraph(metis: Path, seed: int, scratch: Path, tag: str,
     return True, records + 1, ""
 
 
-def run_cell(name: str, edge_str: str, seed: int, variant: str,
-             sweeps: int, timeout: int, scratch_root: str
+def run_cell(name: str, edge_str: str, seed: int, sweeps: int,
+             variant: str, timeout: int, scratch_root: str
              ) -> tuple[str, int, bool, int, int, int, str]:
     """One (fixture, seed, variant) cell.
     Returns (name, seed, ok, n_clusters, n_active, records, log_tail)."""

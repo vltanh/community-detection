@@ -389,15 +389,40 @@ class recursive_cactus {
                 }
             }
         }
+        // [TRACE-STC-Q] quotient-edge accumulator (recursive_cactus.h:392-403)
+        // Composite arithmetic chain: e_ctr index computed via integer
+        // comparison-as-int, wgt_ctr accumulator over edges between SCC
+        // components. Single-ulp / integer-truncation drift here flips
+        // cactus weights. Emit ALL intermediates BEFORE+AFTER per
+        // byte-equal-tracer "Extensive printout" discipline.
         for (NodeID n : G->nodes()) {
             for (EdgeID e : G->edges_of(n)) {
                 NodeID t = G->getEdgeTarget(n, e);
                 EdgeWeight wgt = G->getEdgeWeight(n, e);
                 int ctr = v[t];
-                if (v[n] > ctr) {
-                    EdgeID e_ctr = ctr - (ctr > v[n]);
-                    auto wgt_ctr = wgt + contract->getEdgeWeight(v[n], e_ctr);
-                    contract->setEdgeWeight(v[n], e_ctr, wgt_ctr);
+                int v_n = v[n];
+                bool gate = (v_n > ctr);
+                if (gate) {
+                    int ctr_gt_vn = (ctr > v_n) ? 1 : 0;
+                    EdgeID e_ctr = ctr - ctr_gt_vn;
+                    EdgeWeight wgt_ctr_before =
+                        contract->getEdgeWeight(v_n, e_ctr);
+                    EdgeWeight wgt_ctr = wgt + wgt_ctr_before;
+                    contract->setEdgeWeight(v_n, e_ctr, wgt_ctr);
+                    std::fprintf(stderr,
+                        "[TRACE-STC-Q] n:%u e:%lu t:%u wgt:%lu v_n:%d "
+                        "ctr:%d gate:1 ctr_gt_vn:%d e_ctr:%lu "
+                        "wgt_ctr_before:%lu wgt_ctr_after:%lu\n",
+                        n, (unsigned long)e, t, (unsigned long)wgt,
+                        v_n, ctr, ctr_gt_vn, (unsigned long)e_ctr,
+                        (unsigned long)wgt_ctr_before,
+                        (unsigned long)wgt_ctr);
+                } else {
+                    std::fprintf(stderr,
+                        "[TRACE-STC-Q] n:%u e:%lu t:%u wgt:%lu v_n:%d "
+                        "ctr:%d gate:0\n",
+                        n, (unsigned long)e, t, (unsigned long)wgt,
+                        v_n, ctr);
                 }
             }
         }
@@ -452,32 +477,64 @@ class recursive_cactus {
         size_t i = 1;
         B.emplace_back(0);
         order.emplace_back(false);
+        // [TRACE-STC-SEG] cycle segmentation loop
+        // (recursive_cactus.h:455-477). T10 boundary cycle_degree == 0 ||
+        // == mincut; tie at exact-mincut flips a cycle into a tree segment.
+        // Per-iteration: emit cycle_degree BEFORE+AFTER each edge (the
+        // accumulator delta), branch decision, curr_cycle state.
         while (i < (contract->number_of_nodes() - 1)) {
             EdgeWeight cycle_degree = 0;
             // membership-only test (.count(tgt)); iteration-order independent;
             // left as std::unordered_set per audit row H site #9.
             std::unordered_set<NodeID> curr_cycle;
             NodeID n = rev_node_mapping[i];
+            size_t outer_step = 0;
             while ((cycle_degree == 0 || cycle_degree == mincut)
                    && (i + 1 < contract->number_of_nodes())) {
                 n = rev_node_mapping[i];
+                std::fprintf(stderr,
+                    "[TRACE-STC-SEG] outer_i:%zu outer_step:%zu n:%u "
+                    "cycle_degree_before:%lu curr_cycle_size:%zu\n",
+                    i, outer_step, n, (unsigned long)cycle_degree,
+                    curr_cycle.size());
                 for (EdgeID e : contract->edges_of(n)) {
                     NodeID tgt = contract->getEdgeTarget(n, e);
                     EdgeWeight wgt = contract->getEdgeWeight(n, e);
-                    if (curr_cycle.count(tgt)) {
+                    bool in_cycle = curr_cycle.count(tgt) > 0;
+                    EdgeWeight cd_before = cycle_degree;
+                    if (in_cycle) {
                         cycle_degree -= wgt;
                     } else {
                         cycle_degree += wgt;
                     }
+                    std::fprintf(stderr,
+                        "[TRACE-STC-SEG-E] outer_i:%zu n:%u e:%lu tgt:%u "
+                        "wgt:%lu in_cycle:%d cd_before:%lu cd_after:%lu\n",
+                        i, n, (unsigned long)e, tgt, (unsigned long)wgt,
+                        (int)in_cycle,
+                        (unsigned long)cd_before,
+                        (unsigned long)cycle_degree);
                 }
-                if (cycle_degree == mincut) {
+                bool eq_mc = (cycle_degree == mincut);
+                if (eq_mc) {
                     i++;
                     curr_cycle.insert(n);
                 }
+                std::fprintf(stderr,
+                    "[TRACE-STC-SEG] outer_step:%zu n:%u cd_after_loop:%lu "
+                    "eq_mc:%d i_after:%zu curr_cycle_size_after:%zu\n",
+                    outer_step, n, (unsigned long)cycle_degree,
+                    (int)eq_mc, i, curr_cycle.size());
+                outer_step++;
             }
             if (curr_cycle.size() > 0) {
                 A.emplace_back();
                 order.emplace_back(true);
+                std::fprintf(stderr,
+                    "[TRACE-STC-SEG] commit_cycle A_idx:%zu B_idx:%zu "
+                    "size:%zu vstart:%zu vend:%zu\n",
+                    A.size() - 1, B.size(), curr_cycle.size(),
+                    (size_t)(i - curr_cycle.size()), i);
                 for (size_t v = i - curr_cycle.size(); v < i; ++v) {
                     A.back().emplace_back(v);
                 }
@@ -485,6 +542,10 @@ class recursive_cactus {
                 i++;
                 B.emplace_back(node_mapping[n]);
                 order.emplace_back(false);
+                std::fprintf(stderr,
+                    "[TRACE-STC-SEG] commit_tree A_idx:%zu B_idx:%zu "
+                    "node_mapping:%u i_after:%zu\n",
+                    A.size(), B.size() - 1, node_mapping[n], i);
             }
         }
         order.emplace_back(false);
@@ -492,40 +553,88 @@ class recursive_cactus {
         NodeID previous = 0;
         size_t a_index = 0, b_index = 0;
         VIECUT_ASSERT_EQ(order.size(), A.size() + B.size());
+        // [TRACE-STC-OUT] output cactus edge emission
+        // (recursive_cactus.h:495-530). Output cactus structure determined
+        // entirely here. Emit per-iteration order[i] branch, j-loop step,
+        // previous chain BEFORE+AFTER, new_edge_order args.
         for (size_t i = 0; i < (A.size() + B.size() - 1); ++i) {
-            if (order[i]) {
+            bool order_i = order[i];
+            bool order_next = (i + 1 < order.size()) ? (bool)order[i + 1]
+                                                     : false;
+            std::fprintf(stderr,
+                "[TRACE-STC-OUT] i:%zu order_i:%d order_next:%d "
+                "previous:%u a_index:%zu b_index:%zu A_size:%zu B_size:%zu\n",
+                i, (int)order_i, (int)order_next, previous,
+                a_index, b_index, A.size(), B.size());
+            if (order_i) {
                 // make cycle
-                for (size_t j = 0; j < A[a_index].size(); ++j) {
+                size_t A_n = A[a_index].size();
+                for (size_t j = 0; j < A_n; ++j) {
                     if (j > 0) {
+                        std::fprintf(stderr,
+                            "[TRACE-STC-OUT-E] i:%zu j:%zu kind:within "
+                            "u:%u v:%u w:%lu\n",
+                            i, j, A[a_index][j - 1], A[a_index][j],
+                            (unsigned long)(mincut / 2));
                         stcactus->new_edge_order(A[a_index][j - 1],
                                                  A[a_index][j], mincut / 2);
                     } else {
+                        std::fprintf(stderr,
+                            "[TRACE-STC-OUT-E] i:%zu j:%zu kind:from_prev "
+                            "u:%u v:%u w:%lu\n",
+                            i, j, previous, A[a_index][0],
+                            (unsigned long)(mincut / 2));
                         stcactus->new_edge_order(previous,
                                                  A[a_index][0], mincut / 2);
                     }
-                    if (j == A[a_index].size() - 1) {
+                    if (j == A_n - 1) {
                         // last vertex, connect with next cycle or ordered vtx
                         NodeID next;
-                        if (order[i + 1] == true) {
+                        bool next_is_cycle = (order_next == true);
+                        if (next_is_cycle) {
                             next = stcactus->new_empty_node();
                         } else {
                             next = B[b_index];
                         }
+                        std::fprintf(stderr,
+                            "[TRACE-STC-OUT-E] i:%zu j:%zu kind:to_next "
+                            "u:%u v:%u w:%lu next_is_cycle:%d previous_before:%u\n",
+                            i, j, A[a_index][j], next,
+                            (unsigned long)(mincut / 2),
+                            (int)next_is_cycle, previous);
                         stcactus->new_edge_order(A[a_index][j], next,
                                                  mincut / 2);
+                        std::fprintf(stderr,
+                            "[TRACE-STC-OUT-E] i:%zu j:%zu kind:prev_to_next "
+                            "u:%u v:%u w:%lu\n",
+                            i, j, previous, next,
+                            (unsigned long)(mincut / 2));
                         stcactus->new_edge_order(previous, next, mincut / 2);
                         previous = next;
                     }
                 }
                 a_index++;
+                std::fprintf(stderr,
+                    "[TRACE-STC-OUT] i:%zu kind:cycle_done a_index_after:%zu "
+                    "previous_after:%u\n",
+                    i, a_index, previous);
             } else {
                 // make ordered vtx
-                if (!order[i + 1]) {
+                if (!order_next) {
+                    std::fprintf(stderr,
+                        "[TRACE-STC-OUT-E] i:%zu kind:tree u:%u v:%u "
+                        "w:%lu\n",
+                        i, B[b_index], B[b_index + 1],
+                        (unsigned long)mincut);
                     stcactus->new_edge_order(B[b_index],
                                              B[b_index + 1], mincut);
                 }
                 previous = B[b_index];
                 b_index++;
+                std::fprintf(stderr,
+                    "[TRACE-STC-OUT] i:%zu kind:tree_done b_index_after:%zu "
+                    "previous_after:%u\n",
+                    i, b_index, previous);
             }
         }
         stcactus->finish_construction();

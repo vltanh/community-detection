@@ -111,15 +111,40 @@ def run_cell(name: str, edge: str, seed: int) -> tuple[str, int, bool, int, str]
 
     `edge` is passed as str so the tuple is picklable across worker
     processes. `LOUVAIN_JS` env is read from os.environ (set in main
-    once before fanning out)."""
+    once before fanning out).
+
+    Dense T3 fixtures (e.g. google n=15763) produce trace JSONs that
+    exceed Node's V8 hard cap of 512 MB on string size. When that
+    happens the bytes-out from the cpp tracer go straight to a file
+    (not via stdout capture) and we invoke `trace_splitter.py` to emit
+    the streaming layout (meta + ndjson) which the mjs harness reads
+    via readline."""
     edge_path = Path(edge)
     trace = WORK / f"{name}_l4_s{seed}.json"
-    rc = subprocess.run([str(TRACER), str(edge_path), str(seed)],
-                        capture_output=True, text=True)
+    # Stream tracer stdout to disk so we avoid materialising the entire
+    # output in Python before write (also dodges Python's open-stdout
+    # buffer on 1 GB outputs).
+    with trace.open("wb") as fout:
+        rc = subprocess.run([str(TRACER), str(edge_path), str(seed)],
+                            stdout=fout, stderr=subprocess.PIPE)
     if rc.returncode != 0:
-        return name, seed, False, 0, f"tracer failed: {rc.stderr}"
-    trace.write_text(rc.stdout)
-    rc = subprocess.run(["node", str(JS_REPLAY), str(trace), str(edge_path)],
+        return name, seed, False, 0, f"tracer failed: {rc.stderr[-400:]!r}"
+    # If the trace exceeds 512 MB, split into the streaming layout
+    # before invoking mjs. Threshold is intentionally a hair under
+    # Node's 512 MB string cap (0x1fffffe8 bytes).
+    NODE_STRING_CAP = 0x1fffffe8
+    cpp_arg = str(trace)
+    split_dir = None
+    if trace.stat().st_size > NODE_STRING_CAP:
+        split_dir = WORK / f"{name}_l4_s{seed}_split"
+        rc = subprocess.run(
+            ["python3", str(HERE / "trace_splitter.py"), str(trace), str(split_dir)],
+            capture_output=True, text=True,
+        )
+        if rc.returncode != 0:
+            return name, seed, False, 0, f"splitter failed: {rc.stderr[-400:]}"
+        cpp_arg = str(split_dir)
+    rc = subprocess.run(["node", str(JS_REPLAY), cpp_arg, str(edge_path)],
                         capture_output=True, text=True, env=os.environ.copy())
     log = (rc.stdout + rc.stderr).strip()
     visits = 0
@@ -129,6 +154,16 @@ def run_cell(name: str, edge: str, seed: int) -> tuple[str, int, bool, int, str]
                 visits = int(line.split("visits=")[1].split()[0])
             except ValueError:
                 pass
+    # Cleanup giant intermediates on PASS.
+    if rc.returncode == 0:
+        try: trace.unlink()
+        except OSError: pass
+        if split_dir is not None:
+            for p in split_dir.glob("*"):
+                try: p.unlink()
+                except OSError: pass
+            try: split_dir.rmdir()
+            except OSError: pass
     return name, seed, rc.returncode == 0, visits, log
 
 

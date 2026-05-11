@@ -1,8 +1,9 @@
-"""Infomap L4 3-tier empirical-network stress driver.
+"""Infomap L4 bumped 3-tier empirical-network stress driver.
 
-Runs the Infomap L4 self-RNG byte-equal check on the standard 17-fixture
-undirected non-bipartite panel from reference_cd_stress_tiers.md, sweeping
-the standard 9 seeds × {flat undirected unweighted two-level} per fixture.
+Runs the Infomap L4 self-RNG byte-equal check on the bumped 3-tier
+panel (every network in `data/empirical_networks/networks/` with
+`n ≤ 30000` per `_common/empirical_panel.py`; 161 fixtures, 50 seeds
+= 8050 cells), one variant: flat undirected unweighted two-level.
 
 (Variant scope: the JS port at vltanh.github.io/comdet/js/infomap/
 infomap_canon.js mirrors canonical Infomap v2.9.2 invoked with
@@ -13,12 +14,8 @@ matrix; see infomap codebase_map.md "Variant scope".)
 Per (fixture, seed): cpp tracer (/tmp/infomap_kernel_check_swapped) emits
 per-call + per-visit + per-move trace JSON; self_rng_check.mjs replays
 the JS standalone (own MT19937 + jsLog2 + Lemire intRange, no oracle
-injection) and bit-compares per-visit (v / moved / newM / L / Li / Lm /
-ef / ele / xle / fle / nfle), per-decision (cand[]/candDE[]/candDX[]/
-candDL[]/bM/bDL/sM/sDL/sPick/nLnk/ppV/ppOM/ppT), per-move (oM / pre +
-post enter/exit/flow on both old & new modules / dEEo dEEn dEo dXo dEn
-dXn / vne vnx vnf), and per-call (nMoved / L_post / partition_end).
-PASS = 0 mismatches per cell.
+injection) and bit-compares per-visit / per-decision / per-move / per-
+call records. PASS = 0 mismatches per cell.
 
 Usage:
     python stress_3tier.py [--tiers T1,T2,T3] [--seeds s1,...]
@@ -38,39 +35,11 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "_common"))
 import driver as D  # noqa: E402
+from empirical_panel import discover_panel, SEEDS_50  # noqa: E402
 
 REPO = D.repo_root_from_here(HERE)
-NETS = REPO.parent / "data" / "empirical_networks" / "networks"
 TRACER = Path("/tmp/infomap_kernel_check_swapped")
 CHECK = HERE / "self_rng_check.mjs"
-
-TIERS = {
-    "T1": [
-        ("copenhagen", "copenhagen_fb_friends", 800),
-        ("product_space", "product_space_HS", 866),
-        ("dnc", "dnc", 906),
-        ("euroroad", "euroroad", 1174),
-        ("facebook_organizations", "facebook_organizations_M1", 1429),
-        ("netscience", "netscience", 1461),
-        ("new_zealand_collab", "new_zealand_collab", 1511),
-        ("collins_yeast", "collins_yeast", 1622),
-        ("bible_nouns", "bible_nouns", 1773),
-        ("interactome_yeast", "interactome_yeast", 1846),
-        ("drosophila_flybi", "drosophila_flybi", 2906),
-    ],
-    "T2": [
-        ("arxiv_authors", "arxiv_authors_HepTh", 9875),
-        ("sp_infectious", "sp_infectious", 10972),
-        ("arxiv_authors", "arxiv_authors_HepPh", 12006),
-        ("physics_collab", "physics_collab_arXiv", 14065),
-    ],
-    "T3": [
-        ("internet_as", "internet_as", 22963),
-        ("arxiv_authors", "arxiv_authors_CondMat", 23133),
-    ],
-}
-
-DEFAULT_SEEDS = [1, 7, 13, 42, 99, 137, 1729, 65535, 2147483646]
 
 
 def run_cell(name: str, edge: str, seed: int,
@@ -139,51 +108,49 @@ def run_cell(name: str, edge: str, seed: int,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tiers", default="T1,T2,T3")
-    ap.add_argument("--seeds", default=",".join(str(s) for s in DEFAULT_SEEDS))
+    ap.add_argument("--seeds", default=",".join(str(s) for s in SEEDS_50))
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--quick", action="store_true",
                     help="3 seeds × 1 fixture per tier (smoke).")
     ap.add_argument("--timeout", type=int, default=600,
                     help="per-cell timeout in seconds (T3 cells need >=300s)")
     ap.add_argument("--scratch", default="/tmp/infomap_stress_3tier")
+    ap.add_argument("--max-per-tier", type=int, default=0,
+                    help="cap fixture count per tier (0 = unlimited)")
     args = ap.parse_args()
 
     tiers = args.tiers.split(",")
+    panel = discover_panel(REPO)
     if args.quick:
-        seeds = DEFAULT_SEEDS[:3]
-        fixtures_per_tier = 1
+        seeds = SEEDS_50[:3]
+        per_tier_cap = 1
     else:
         seeds = [int(s) for s in args.seeds.split(",")]
-        fixtures_per_tier = None
+        per_tier_cap = args.max_per_tier or None
 
     if not TRACER.is_file():
         sys.exit(f"tracer binary missing: {TRACER}\n"
                  f"build via: bash {HERE}/instrumented/build.sh")
 
     tier_cells: dict[str, list[tuple[str, str, int]]] = {}
-    skipped: list[str] = []
     for tier in tiers:
-        if tier not in TIERS:
+        if tier not in panel:
             sys.exit(f"unknown tier: {tier}")
-        fixtures = TIERS[tier]
-        if fixtures_per_tier is not None:
-            fixtures = fixtures[:fixtures_per_tier]
+        fixtures = panel[tier]
+        if per_tier_cap is not None:
+            fixtures = fixtures[:per_tier_cap]
         cells: list[tuple[str, str, int]] = []
-        for subdir, base, _n in fixtures:
-            edge = NETS / subdir / f"{base}.csv"
-            if not edge.is_file():
-                skipped.append(f"{tier}/{base} (missing {edge})")
-                continue
+        for fx in fixtures:
             for seed in seeds:
-                cells.append((base, str(edge), seed))
+                cells.append((fx["subnet"], fx["edge"], seed))
         tier_cells[tier] = cells
 
     total_cells = sum(len(c) for c in tier_cells.values())
-    print(f"Infomap L4 3-tier stress: tiers={','.join(tiers)} seeds={len(seeds)} "
+    print(f"Infomap L4 bumped 3-tier stress: tiers={','.join(tiers)} seeds={len(seeds)} "
           f"workers={args.workers} timeout={args.timeout}s "
           f"total_cells={total_cells}")
-    for s in skipped:
-        print(f"  SKIP {s}")
+    for tier in tiers:
+        print(f"  {tier}: {len(panel[tier])} fixtures")
     print()
     sys.stdout.flush()
 

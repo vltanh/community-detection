@@ -1,9 +1,13 @@
-"""Louvain L4 3-tier empirical-network stress driver.
+"""Louvain L4 bumped 3-tier empirical-network stress driver.
 
 Runs the Louvain L4 byte-equal kernel cross-check (kernel_check_l4.py's
-`run_cell`) on the standard 17-fixture undirected non-bipartite panel
-from reference_cd_stress_tiers.md, sweeping the standard 9 seeds per
-fixture.
+`run_cell`) on the bumped 3-tier panel from
+`_common/empirical_panel.py` — every network in
+`data/empirical_networks/networks/` with `n ≤ 30000` (161 fixtures
+total), sweeping the standard 50-seed set per fixture.
+
+Subsumes the heritage `kernel_check_l4_empirical.py` driver (now
+dropped). 161 × 50 = **8050 cells per panel**.
 
 Per (fixture, seed): cpp tracer (/tmp/louvain_l4_tracer) emits per-visit
 trace JSON; kernel_check_l4.mjs replays the JS standalone and bit-
@@ -29,48 +33,20 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "_common"))
-import driver as D
+import driver as D  # noqa: E402
+from empirical_panel import discover_panel, SEEDS_50  # noqa: E402
 
 # Reuse the per-cell runner from kernel_check_l4.
 sys.path.insert(0, str(HERE))
-import kernel_check_l4 as L4
+import kernel_check_l4 as L4  # noqa: E402
 
 REPO = D.repo_root_from_here(HERE)
-NETS = REPO.parent / "data" / "empirical_networks" / "networks"
-
-TIERS = {
-    "T1": [
-        ("copenhagen", "copenhagen_fb_friends"),
-        ("product_space", "product_space_HS"),
-        ("dnc", "dnc"),
-        ("euroroad", "euroroad"),
-        ("facebook_organizations", "facebook_organizations_M1"),
-        ("netscience", "netscience"),
-        ("new_zealand_collab", "new_zealand_collab"),
-        ("collins_yeast", "collins_yeast"),
-        ("bible_nouns", "bible_nouns"),
-        ("interactome_yeast", "interactome_yeast"),
-        ("drosophila_flybi", "drosophila_flybi"),
-    ],
-    "T2": [
-        ("arxiv_authors", "arxiv_authors_HepTh"),
-        ("sp_infectious", "sp_infectious"),
-        ("arxiv_authors", "arxiv_authors_HepPh"),
-        ("physics_collab", "physics_collab_arXiv"),
-    ],
-    "T3": [
-        ("internet_as", "internet_as"),
-        ("arxiv_authors", "arxiv_authors_CondMat"),
-    ],
-}
-
-DEFAULT_SEEDS = [1, 7, 13, 42, 99, 137, 1729, 65535, 2147483646]
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tiers", default="T1,T2,T3")
-    ap.add_argument("--seeds", default=",".join(str(s) for s in DEFAULT_SEEDS))
+    ap.add_argument("--seeds", default=",".join(str(s) for s in SEEDS_50))
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 4,
                     help="parallel worker processes")
     ap.add_argument("--working-tree", dest="working_tree",
@@ -83,15 +59,18 @@ def main() -> int:
                     help="replay against the HEAD-pinned louvain.js.")
     ap.add_argument("--quick", action="store_true",
                     help="3 seeds × 1 fixture per tier (smoke).")
+    ap.add_argument("--max-per-tier", type=int, default=0,
+                    help="cap fixture count per tier (0 = unlimited)")
     args = ap.parse_args()
 
     tiers = args.tiers.split(",")
+    panel = discover_panel(REPO)
     if args.quick:
-        seeds = DEFAULT_SEEDS[:3]
-        fixtures_per_tier = 1
+        seeds = SEEDS_50[:3]
+        per_tier_cap = 1
     else:
         seeds = [int(s) for s in args.seeds.split(",")]
-        fixtures_per_tier = None  # all
+        per_tier_cap = args.max_per_tier or None
 
     # Build cpp tracer (no-op if up to date) + resolve louvain.js, set env
     # once before forking workers.
@@ -114,28 +93,23 @@ def main() -> int:
 
     # Build the cell list per tier (so per-tier counters work).
     tier_cells: dict[str, list[tuple[str, str, int]]] = {}
-    skipped: list[str] = []
     for tier in tiers:
-        if tier not in TIERS:
+        if tier not in panel:
             sys.exit(f"unknown tier: {tier}")
-        fixtures = TIERS[tier]
-        if fixtures_per_tier is not None:
-            fixtures = fixtures[:fixtures_per_tier]
+        fixtures = panel[tier]
+        if per_tier_cap is not None:
+            fixtures = fixtures[:per_tier_cap]
         cells: list[tuple[str, str, int]] = []
-        for subdir, base in fixtures:
-            edge = NETS / subdir / f"{base}.csv"
-            if not edge.is_file():
-                skipped.append(f"{tier}/{base} (missing {edge})")
-                continue
+        for fx in fixtures:
             for seed in seeds:
-                cells.append((base, str(edge), seed))
+                cells.append((fx["subnet"], fx["edge"], seed))
         tier_cells[tier] = cells
 
     total_cells = sum(len(c) for c in tier_cells.values())
-    print(f"L4 3-tier stress: tiers={','.join(tiers)} seeds={len(seeds)} "
+    print(f"L4 bumped 3-tier stress: tiers={','.join(tiers)} seeds={len(seeds)} "
           f"workers={args.workers} total_cells={total_cells}")
-    for s in skipped:
-        print(f"  SKIP {s}")
+    for tier in tiers:
+        print(f"  {tier}: {len(panel[tier])} fixtures")
     print()
     sys.stdout.flush()
 

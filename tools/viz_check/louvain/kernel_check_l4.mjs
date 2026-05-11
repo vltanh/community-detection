@@ -20,16 +20,52 @@
  */
 import fs from "fs";
 import path from "path";
+import readline from "readline";
 import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const args = process.argv.slice(2);
 if (args.length < 2) {
-  console.error("usage: kernel_check_l4.mjs <tracer.json> <edge.csv>");
+  console.error("usage: kernel_check_l4.mjs <tracer.json|split_dir> <edge.csv>");
   process.exit(2);
 }
 const [cppPath, edgePath] = args;
-const cpp = JSON.parse(fs.readFileSync(cppPath, "utf8"));
+
+// Load cpp trace. Two paths to handle:
+//   1. legacy: cppPath is a single JSON file <= 512 MB. JSON.parse the
+//      whole thing; cpp.levels[L].visits[*] is fully present.
+//   2. streaming: cppPath is a directory containing
+//        trace.meta.json     — everything EXCEPT levels[].visits[]
+//        trace.visits.ndjson — one line per visit, with "L":<level>
+//      Required for dense T3 fixtures (e.g. google n=15763) where the
+//      single-JSON trace exceeds Node's 512 MB V8 string cap. Build the
+//      split layout via tools/viz_check/louvain/trace_splitter.py
+//      ahead of time. The streaming path populates cpp.levels[L].visits
+//      one level at a time so peak memory stays bounded.
+let cpp;
+let cppNdjsonPath = null;
+{
+  const stat = fs.statSync(cppPath);
+  if (stat.isDirectory()) {
+    const metaP = path.join(cppPath, "trace.meta.json");
+    const ndP = path.join(cppPath, "trace.visits.ndjson");
+    if (!fs.existsSync(metaP) || !fs.existsSync(ndP)) {
+      console.error(`split dir missing meta or ndjson: ${cppPath}`);
+      process.exit(2);
+    }
+    cpp = JSON.parse(fs.readFileSync(metaP, "utf8"));
+    cppNdjsonPath = ndP;
+  } else {
+    try {
+      cpp = JSON.parse(fs.readFileSync(cppPath, "utf8"));
+    } catch (e) {
+      console.error(`failed to load cpp trace ${cppPath}: ${e.message}`);
+      console.error("Hint: if the trace exceeds 512 MB run "
+                  + "trace_splitter.py first and pass the output directory.");
+      process.exit(2);
+    }
+  }
+}
 
 globalThis.window = globalThis;
 globalThis.window.COMDET = { FIXTURE: { nodes: [], edges: [], gt: [] } };
@@ -110,10 +146,57 @@ if (out.levels.length !== cpp.levels.length) {
   examples.push(`level count mismatch: js=${out.levels.length} cpp=${cpp.levels.length}`);
 }
 
+// Streaming-mode helper: lazy-load cpp.levels[L].visits[] from the
+// ndjson stream. The ndjson is emitted level-major (all L=0 visits, then
+// L=1, ...), so we can stream forward without random access. Returns a
+// promise that resolves with the level's visits[] array; subsequent
+// calls return the next level's array. Closes the stream on EOF.
+let _ndIterator = null;
+let _ndDone = false;
+let _peekedVisit = null;
+let _peekedL = -1;
+async function loadCpVisitsForLevel(L) {
+  if (!cppNdjsonPath) return cpp.levels[L].visits;
+  if (_ndIterator == null) {
+    const fileStream = fs.createReadStream(cppNdjsonPath, { encoding: "utf8" });
+    _ndIterator = readline.createInterface({ input: fileStream, crlfDelay: Infinity })[Symbol.asyncIterator]();
+  }
+  const out = [];
+  // Re-use any peeked visit that belongs to this level.
+  if (_peekedVisit != null && _peekedL === L) {
+    out.push(_peekedVisit);
+    _peekedVisit = null;
+    _peekedL = -1;
+  } else if (_peekedVisit != null && _peekedL > L) {
+    // ndjson has moved past this level. Return empty (level not present
+    // in the cpp trace).
+    return out;
+  }
+  while (!_ndDone) {
+    const it = await _ndIterator.next();
+    if (it.done) { _ndDone = true; break; }
+    const line = it.value;
+    if (!line) continue;
+    const obj = JSON.parse(line);
+    if (obj.L === L) { out.push(obj); continue; }
+    if (obj.L > L) {
+      _peekedVisit = obj;
+      _peekedL = obj.L;
+      break;
+    }
+    // obj.L < L should not happen (ndjson is sorted L-major).
+  }
+  return out;
+}
+
 const Lmin = Math.min(out.levels.length, cpp.levels.length);
 for (let L = 0; L < Lmin; L++) {
   const jsLv = out.levels[L];
   const cpLv = cpp.levels[L];
+  // Streaming mode: load this level's visits[] from ndjson.
+  if (cppNdjsonPath) {
+    cpLv.visits = await loadCpVisitsForLevel(L);
+  }
   if (jsLv.sweeps.length !== cpLv.passes) {
     fail++;
     examples.push(`L${L}: pass count mismatch js=${jsLv.sweeps.length} cpp=${cpLv.passes}`);
@@ -286,6 +369,11 @@ for (let L = 0; L < Lmin; L++) {
     }
   }
   // Skip post-level n2c compare: JS run does not expose pre-renumber n2c.
+  // Streaming mode: free this level's visits[] now so peak memory stays
+  // bounded across deep multi-level traces.
+  if (cppNdjsonPath) {
+    cpLv.visits = null;
+  }
 }
 
 // Compare composed fine_membership.

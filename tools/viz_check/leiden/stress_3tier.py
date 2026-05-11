@@ -1,12 +1,14 @@
-"""Leiden L4 3-tier empirical-network stress driver.
+"""Leiden L4 bumped 3-tier empirical-network stress driver.
 
-Runs the Leiden L4 self-RNG byte-equal check on the standard 17-fixture
-undirected non-bipartite panel from reference_cd_stress_tiers.md, sweeping
-the standard 9 seeds × {mod 1.0, cpm 0.05} per fixture. (The third
-quality variant `rb` documented in the playbook has no JS port — see
-codebase_map.md "Variant scope for this audit": only CPM + Modularity
-are in-scope for the JS visualizer; Significance / Surprise / RBC / RBER
-have no JS port.)
+Runs the Leiden L4 self-RNG byte-equal check on the bumped 3-tier panel
+(every network in `data/empirical_networks/networks/` with `n ≤ 30000`
+per `_common/empirical_panel.py`; 161 fixtures, 50 seeds = 8050 cells
+per quality variant), sweeping {mod 1.0, cpm 0.5} per fixture.
+
+(The third quality variant `rb` documented in the playbook has no JS
+port — see codebase_map.md "Variant scope for this audit": only CPM +
+Modularity are in-scope for the JS visualizer; Significance / Surprise
+/ RBC / RBER have no JS port.)
 
 Per (fixture, seed, quality): cpp tracer (/tmp/leiden_kernel_check) emits
 per-pass + per-visit trace JSON; self_rng_check.mjs replays the JS
@@ -16,7 +18,7 @@ per cell across both per-visit and per-pass scalar fields.
 
 Usage:
     python stress_3tier.py [--tiers T1,T2,T3] [--seeds s1,...]
-                            [--qualities mod:1.0,cpm:0.05] [--workers N]
+                            [--qualities mod:1.0,cpm:0.5] [--workers N]
                             [--quick] [--timeout 600]
 """
 from __future__ import annotations
@@ -32,40 +34,13 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "_common"))
 import driver as D  # noqa: E402
+from empirical_panel import discover_panel, SEEDS_50  # noqa: E402
 
 REPO = D.repo_root_from_here(HERE)
-NETS = REPO.parent / "data" / "empirical_networks" / "networks"
 TRACER = Path("/tmp/leiden_kernel_check")
 CHECK = HERE / "self_rng_check.mjs"
 
-TIERS = {
-    "T1": [
-        ("copenhagen", "copenhagen_fb_friends", 800),
-        ("product_space", "product_space_HS", 866),
-        ("dnc", "dnc", 906),
-        ("euroroad", "euroroad", 1174),
-        ("facebook_organizations", "facebook_organizations_M1", 1429),
-        ("netscience", "netscience", 1461),
-        ("new_zealand_collab", "new_zealand_collab", 1511),
-        ("collins_yeast", "collins_yeast", 1622),
-        ("bible_nouns", "bible_nouns", 1773),
-        ("interactome_yeast", "interactome_yeast", 1846),
-        ("drosophila_flybi", "drosophila_flybi", 2906),
-    ],
-    "T2": [
-        ("arxiv_authors", "arxiv_authors_HepTh", 9875),
-        ("sp_infectious", "sp_infectious", 10972),
-        ("arxiv_authors", "arxiv_authors_HepPh", 12006),
-        ("physics_collab", "physics_collab_arXiv", 14065),
-    ],
-    "T3": [
-        ("internet_as", "internet_as", 22963),
-        ("arxiv_authors", "arxiv_authors_CondMat", 23133),
-    ],
-}
-
-DEFAULT_SEEDS = [1, 7, 13, 42, 99, 137, 1729, 65535, 2147483646]
-DEFAULT_QUALITIES = [("mod", 1.0), ("cpm", 0.05)]
+DEFAULT_QUALITIES = [("mod", 1.0), ("cpm", 0.5)]
 
 
 def parse_qualities(spec: str) -> list[tuple[str, float]]:
@@ -124,7 +99,6 @@ def run_cell(name: str, edge: str, seed: int, quality: str, param: float,
     moves = 0
     for line in log.splitlines():
         if line.startswith("canonical:"):
-            # canonical: top passes=N total visits=V
             parts = line.split()
             for p in parts:
                 if p.startswith("visits="):
@@ -133,7 +107,6 @@ def run_cell(name: str, edge: str, seed: int, quality: str, param: float,
                     except ValueError:
                         pass
         elif line.startswith("per-visit:"):
-            # per-visit: ... dQ_bit_mm=X/M
             for p in line.split():
                 if p.startswith("dQ_bit_mm="):
                     val = p.split("=", 1)[1]
@@ -142,7 +115,6 @@ def run_cell(name: str, edge: str, seed: int, quality: str, param: float,
                     except (IndexError, ValueError):
                         pass
     ok = rc.returncode == 0
-    # Cleanup on PASS to save disk; keep on FAIL for diag.
     if ok:
         for f in (trace, com, err):
             try: f.unlink()
@@ -154,24 +126,27 @@ def run_cell(name: str, edge: str, seed: int, quality: str, param: float,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tiers", default="T1,T2,T3")
-    ap.add_argument("--seeds", default=",".join(str(s) for s in DEFAULT_SEEDS))
-    ap.add_argument("--qualities", default="mod:1.0,cpm:0.05")
+    ap.add_argument("--seeds", default=",".join(str(s) for s in SEEDS_50))
+    ap.add_argument("--qualities", default="mod:1.0,cpm:0.5")
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--quick", action="store_true",
                     help="3 seeds × 1 fixture per tier × 1 quality (smoke).")
     ap.add_argument("--timeout", type=int, default=600,
                     help="per-cell timeout in seconds (T3 cells need >=300s)")
     ap.add_argument("--scratch", default="/tmp/leiden_stress_3tier")
+    ap.add_argument("--max-per-tier", type=int, default=0,
+                    help="cap fixture count per tier (0 = unlimited)")
     args = ap.parse_args()
 
     tiers = args.tiers.split(",")
+    panel = discover_panel(REPO)
     if args.quick:
-        seeds = DEFAULT_SEEDS[:3]
-        fixtures_per_tier = 1
+        seeds = SEEDS_50[:3]
+        per_tier_cap = 1
         qualities = DEFAULT_QUALITIES[:1]
     else:
         seeds = [int(s) for s in args.seeds.split(",")]
-        fixtures_per_tier = None
+        per_tier_cap = args.max_per_tier or None
         qualities = parse_qualities(args.qualities)
 
     # Build cpp tracer (no-op if up to date).
@@ -181,30 +156,25 @@ def main() -> int:
 
     # Build cell list, grouped per tier.
     tier_cells: dict[str, list[tuple[str, str, int, str, float]]] = {}
-    skipped: list[str] = []
     for tier in tiers:
-        if tier not in TIERS:
+        if tier not in panel:
             sys.exit(f"unknown tier: {tier}")
-        fixtures = TIERS[tier]
-        if fixtures_per_tier is not None:
-            fixtures = fixtures[:fixtures_per_tier]
+        fixtures = panel[tier]
+        if per_tier_cap is not None:
+            fixtures = fixtures[:per_tier_cap]
         cells: list[tuple[str, str, int, str, float]] = []
-        for subdir, base, _n in fixtures:
-            edge = NETS / subdir / f"{base}.csv"
-            if not edge.is_file():
-                skipped.append(f"{tier}/{base} (missing {edge})")
-                continue
+        for fx in fixtures:
             for seed in seeds:
                 for q, p in qualities:
-                    cells.append((base, str(edge), seed, q, p))
+                    cells.append((fx["subnet"], fx["edge"], seed, q, p))
         tier_cells[tier] = cells
 
     total_cells = sum(len(c) for c in tier_cells.values())
-    print(f"L4 3-tier stress: tiers={','.join(tiers)} seeds={len(seeds)} "
+    print(f"L4 bumped 3-tier stress: tiers={','.join(tiers)} seeds={len(seeds)} "
           f"qualities={len(qualities)} workers={args.workers} timeout={args.timeout}s "
           f"total_cells={total_cells}")
-    for s in skipped:
-        print(f"  SKIP {s}")
+    for tier in tiers:
+        print(f"  {tier}: {len(panel[tier])} fixtures")
     print()
     sys.stdout.flush()
 

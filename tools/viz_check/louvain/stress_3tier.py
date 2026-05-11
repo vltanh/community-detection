@@ -101,11 +101,16 @@ def main() -> int:
         louvain_js = web / "comdet" / "js" / "louvain" / "louvain.js"
         if not louvain_js.is_file():
             sys.exit(f"working-tree louvain.js not found: {louvain_js}")
+        common_js = web / "comdet" / "js" / "common" / "common.js"
+        if not common_js.is_file():
+            sys.exit(f"working-tree common.js not found: {common_js}")
         print(f"[working-tree] using {louvain_js}")
     else:
         louvain_js = L4.ensure_louvain_head_js()
+        common_js = Path(L4.COMMON_JS_HEAD)
         print(f"[HEAD-pinned] using {louvain_js}")
     os.environ["LOUVAIN_JS"] = str(louvain_js)
+    os.environ["COMMON_JS"] = str(common_js)
 
     # Build the cell list per tier (so per-tier counters work).
     tier_cells: dict[str, list[tuple[str, str, int]]] = {}

@@ -40,6 +40,7 @@ JS_REPLAY = HERE / "kernel_check_l4.mjs"
 
 DEFAULT_SEEDS = [1, 7, 13, 42, 99, 137, 1729, 65535, 2147483646]
 LOUVAIN_JS_HEAD = "/tmp/louvain_head_l4.js"
+COMMON_JS_HEAD = "/tmp/comdet_common_head_l4.js"
 
 # vltanh.github.io is a separate clone (not a submodule) parked at the
 # repo root or one of its parents; layout varies by checkout. Walk a
@@ -73,6 +74,17 @@ def ensure_louvain_head_js() -> Path:
         sys.stderr.write(rc.stderr)
         sys.exit(2)
     Path(LOUVAIN_JS_HEAD).write_text(rc.stdout)
+    # Post-2026-05-10 cross-algo refactor: louvain.js consumes COMDET.COMMON
+    # (MT19937, Graph, shuffle, range). Pin the matching HEAD common.js
+    # alongside louvain.js so the JS replay harness can resolve it.
+    rc = subprocess.run(
+        ["git", "-C", str(web), "show", "HEAD:comdet/js/common/common.js"],
+        capture_output=True, text=True,
+    )
+    if rc.returncode != 0:
+        sys.stderr.write(rc.stderr)
+        sys.exit(2)
+    Path(COMMON_JS_HEAD).write_text(rc.stdout)
     return Path(LOUVAIN_JS_HEAD)
 
 
@@ -140,10 +152,15 @@ def main() -> int:
         louvain_js = web / "comdet" / "js" / "louvain" / "louvain.js"
         if not louvain_js.is_file():
             sys.exit(f"working-tree louvain.js not found: {louvain_js}")
+        common_js = web / "comdet" / "js" / "common" / "common.js"
+        if not common_js.is_file():
+            sys.exit(f"working-tree common.js not found: {common_js}")
         print(f"[working-tree] using {louvain_js}\n")
     else:
         louvain_js = ensure_louvain_head_js()
+        common_js = Path(COMMON_JS_HEAD)
     os.environ["LOUVAIN_JS"] = str(louvain_js)
+    os.environ["COMMON_JS"] = str(common_js)
 
     inputs = [
         ("fixture32", WORK / "edge.csv"),

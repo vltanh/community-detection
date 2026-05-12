@@ -10,3 +10,9 @@ externals/louvain/hierarchy
 externals/louvain/louvain
 externals/louvain/matrix
 src/louvain/seed_shim/*.so
+tests/cd_verify/convert
+tests/cd_verify/hierarchy
+tests/cd_verify/louvain
+
+# VSCode artifacts
+.claude/

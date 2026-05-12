@@ -53,6 +53,7 @@ console.log(`cpp visits captured: ${cppVisits.length} across ${cpp.calls.length}
 globalThis.window = globalThis;
 globalThis.window.COMDET = { FIXTURE: { nodes: [], edges: [], gt: [] } };
 const WEB = path.join(__dirname, "../../../vltanh.github.io/comdet/js");
+await import(path.join(WEB, "common/common.js"));
 await import(path.join(WEB, "louvain/louvain.js"));
 await import(path.join(WEB, "infomap/infomap_canon.js"));
 

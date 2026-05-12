@@ -87,7 +87,12 @@ static bool IsWellConnectedLog(double pre_computed_log,
 }
 
 // Helpers for emitting int-vector contents inline in stderr probes.
-static std::string vec_to_str(const std::vector<int>& v, size_t limit = 64) {
+// NB: probes must serialise the FULL vector — truncation breaks
+// byte-equal comparison vs the JS side, which emits the full
+// children list verbatim. Optional limit kept for backwards-
+// compatible call sites that may want to cap; default = no cap.
+static std::string vec_to_str(const std::vector<int>& v,
+                              size_t limit = (size_t)-1) {
     std::string s = "[";
     for (size_t i = 0; i < v.size(); i++) {
         if (i) s += ",";

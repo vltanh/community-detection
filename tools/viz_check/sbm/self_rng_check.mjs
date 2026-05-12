@@ -31,22 +31,7 @@ const edgePath = process.argv[3];
 const mode = process.argv[4];
 const nestedFlag = process.argv.includes("--nested");
 
-// cpp tracer emits NaN / +/-Infinity as the JSON string tokens
-// "NaN" / "Infinity" / "-Infinity" (default `operator<<` on NaN
-// writes literal `nan` which is NOT valid JSON). Round-trip them
-// back to the corresponding IEEE-754 doubles via this reviver so
-// `bitsOf(...)` sees the same NaN bit pattern on both sides. The
-// nested tracer hits this when candidatePool returns a fresh-block
-// target s == B (capacity), routing the OOB-tolerant `ers_at` in
-// cpp + the JS Float64Array undefined-coerce path to NaN dS /
-// subsetSE / expArg / expVal.
-function nanReviver(_k, v) {
-  if (v === "NaN") return NaN;
-  if (v === "Infinity") return Infinity;
-  if (v === "-Infinity") return -Infinity;
-  return v;
-}
-const trace = JSON.parse(fs.readFileSync(tracePath, "utf8"), nanReviver);
+const trace = JSON.parse(fs.readFileSync(tracePath, "utf8"));
 
 globalThis.window = globalThis;
 globalThis.window.COMDET = { FIXTURE: { nodes: [], edges: [], gt: [] } };

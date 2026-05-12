@@ -43,10 +43,14 @@ number = 4 from A's K_5).
    which delegates to `nk.centrality.CoreDecomposition`. Returns the
    subgraph induced by every node with core number `≥ max_k`, the
    current `max_k`, and the raw `kc` object.
-2. **Bail check.** If `max_k < k` (line 114), every remaining node is
-   emitted as a singleton (with a degree-aware modularity score that
-   has no downstream effect since singletons are filtered in
-   `print_clusters`).
+2. **Bail check.** If `max_k < k` (line 116), every remaining node is
+   emitted as a singleton with a per-node modularity score
+   `-(degree / 2L)²`; previously-accumulated singletons (from
+   prior-iter dropped components) are appended with score 0. The
+   scores never reach `com.csv` because `print_clusters` filters
+   every cluster of size ≤ 1. See the "Bail iteration" section
+   below for the FP-path details that bit-equal verification turns
+   on.
 3. **Connected-components split.** `nk.components.WeaklyConnectedComponents`
    on the kcore subgraph (line 125-127). Each component is a
    candidate cluster.
@@ -126,6 +130,36 @@ NetworKit's CoreDecomposition modulo iteration-order canonicalisation
 | `l_s` | `lS[ci]` | intra-edges |
 | `d_s` | `dS[ci]` | intra-degree sum |
 | `cluster_id_counter` | implicit (post-bijection) | cluster id |
+
+## Bail iteration
+
+When `max_k < k` at the top of an iteration, the bail branch at
+[`run_ikc.py:116-124`](../../src/ikc/run_ikc.py#L116) fires. Each
+remaining residual node is emitted as a singleton with a per-node
+modularity score `-(degree / 2L)²`, where `degree` is the node's
+NetworKit directed out-degree on the original graph and `L` is the
+full-graph edge count. Already-accumulated singletons from prior
+iterations (failed-gate components, k-valid-fail components) are
+appended with modularity `0`. The CSV writer at
+[`run_ikc.py:67`](../../src/ikc/run_ikc.py#L67) filters every cluster
+of size ≤ 1, so neither stamp reaches `com.csv`; both stamps surface in
+the in-memory `final_clusters` list (and the per-iter trace).
+
+The bail-branch is the only floating-point path on the deterministic
+side of the algorithm. The modularity gate path is dead, so the bail
+FP path is the only place a byte-equal port has to match libm-level
+arithmetic. Python's `r**2` routes through CPython `float_pow` into
+glibc `pow`, which is faithfully rounded (within 1 ULP, computed via
+`exp(2*log(r))`). V8's `Math.pow(x, 2)` short-circuits to `x*x`, which
+is correctly rounded. The two values differ on roughly 0.09% of
+inputs by ±1 ULP. The byte-equal verification port uses `ratio *
+ratio` on both sides of the diff (Python tracer + JS port) to match
+the correctly-rounded value, sidestepping the libm-vs-V8 divergence.
+A concrete divergence example surfaced on the bumped 3-tier panel at
+`physics_collab_pierreAuger` (n=514, m=6482) at `k_floor=3`,
+iter 13, node 44, `d=12`, `2L=12964`: glibc `pow` produces
+`0x3eacbff0c59c82ab` while `r*r` produces `0x3eacbff0c59c82aa`; the
+exact mathematical \(r^2\) is closer to the `r*r` value.
 
 ## Paper-vs-shipped divergences
 
@@ -277,15 +311,27 @@ IKC with WCC / CM filters per Park 2024).
 
 Gold-standard 2-leg byte-equal pipeline. Per-step JSON trace bit-equal
 across canonical-tracer (Python instrumented fork) and JS kernel
-(`runIKC` + `__IKC_HOOK`). 63 of 63 cells PASS across the
+(`runIKC` + `__IKC_HOOK`). 74 of 74 cells PASS across the
 `cd_stress_tiers` panel (T1 + T2 + T3, n = 800..23k,
-`k_floor ∈ {2, 3, 5, 8, 10}`), 0 mismatches over 10,481 cumulative
-records. Wall: 152s.
+`k_floor ∈ {2, 3, 5, 8, 10}`), 0 mismatches over 10,578 cumulative
+records. Wall: 244s. Re-verified after the G2 + G8 + G9 P0 probe
+closures.
 
 IKC has zero RNG calls, so audit rows A (RNG byte stream), B (draw
 count + order), C (distribution mapping) collapse, and the playbook's
-≥1M-record FP/seed bar is heuristic-only. The operative bar is full-panel
-byte-equal under matching input.
+≥1M-record FP/seed bar is heuristic-only. The operative bar is
+full-panel byte-equal under matching input.
+
+| Tier | n range | k_floor sweep | Cells | PASS | Records |
+| --- | --- | --- | --- | --- | --- |
+| T1 | 800..2906 | {2, 3, 5, 10} | 44 | 44 | 1,485 |
+| T2 | 9875..14065 | {2, 3, 5, 8, 10} | 20 | 20 | 6,451 |
+| T3 | 22963..23133 | {2, 3, 5, 8, 10} | 10 | 10 | 2,642 |
+| **All** | | | **74** | **74** | **10,578** |
+
+The earlier T1 sweep `{2, 3, 5}` (33 cells, 1,388 records) is subsumed
+by the T1 sweep above; extending T1 with `k=10` adds 11 cells, all
+PASS unchanged.
 
 Pipeline layout:
 
@@ -319,13 +365,36 @@ Equivalence tests:
 | (a) build-pair: TRACER_MODE=0 CSV vs `run_ikc.py` CSV | PASS | fixture32 + dnc |
 | (b) self-determinism: TRACER_MODE=1 ×2 same input | PASS | fixture32 + dnc |
 | (c) structural sanity: TRACER_MODE=1 CSV vs `run_ikc.py` CSV | PASS | subsumes (a) |
-| (d) JS hook-installed-vs-uninstalled final state | PASS | 18 events captured, return value identical |
+| (d) JS hook-installed-vs-uninstalled final state | PASS | 19 events captured (post-P0-closure), return value identical |
 
 H-row closure: schema contract pins both `members_iter_order` and
 `accepted_canonical_order.members_compact_in_orig_id` to lex-smallest
 BFS. JS kernel sorts adjacency ASC; Python tracer re-runs BFS over
 `cc.getComponents()` membership sets. CSV path keeps NetworKit-natural
 order so `com.csv` stays byte-equal against the canonical binary.
+
+P0 probe closures (per `tracer_coverage_gaps.md`):
+
+| Gap | Probe scope | Schema fields |
+| --- | --- | --- |
+| **G2** k-validity loop scope | per-node degree inside the kcore subgraph (in / out / sum), `in_component` flag, `check_result` ∈ {`skipped`, `ok`, `fail`, `post_break_unvisited`} | `components[].k_valid_loop_scope[]` |
+| **G8** bail-iter FP path | per-node `(d / 2L)²` for every residual node when `max_k < k`; emits `d`, `two_L`, `ratio`, `ratio_squared`, `neg_ratio_squared` | `iters[].bail_L`, `iters[].bail_per_node_modularity[]` |
+| **G9** `nodes_to_remove` mutation order | per-component snapshot of the accumulator after each `update(component)` call; sorted view so the per-component growth is visible without hash-order divergence | `components[].nodes_to_remove_after_update_sorted` |
+
+Set-removal iteration order in `run_ikc.py:193` is fundamentally
+divergent from JS (Python's `set` iteration order differs from JS
+`Set` order on any non-trivial input). The probe records it on stderr
+only; the JSON schema field is the sorted snapshot, which is
+deterministic and bit-equal.
+
+Bumped 3-tier panel (2026-05-11, post-P0-closure) caught one
+divergence not present in the cd_stress_tiers panel: the bail-iter
+modularity FP path at `iters[N].bail_per_node_modularity[K].n` on
+fixture `physics_collab_pierreAuger` (n=514, m=6482). The divergence
+is the libm-`pow` vs V8-`Math.pow(x,2)` 1-ULP difference described in
+the "Bail iteration" section above. The fix is to use `r*r` on both
+sides (Python tracer + JS port), which matches the correctly-rounded
+mathematical \(r^2\) and bypasses libm's faithfully-rounded `pow`.
 
 Run:
 

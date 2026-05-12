@@ -1,9 +1,9 @@
-"""WCC L4 3-tier empirical-network stress driver.
+"""WCC L4 bumped 3-tier empirical-network stress driver.
 
-Chains a community-detection algorithm (Leiden-Mod or SBM-Flat-PP) to
-produce the input partition, then runs the WCC tracer + JS self-RNG
-check on that partition. Per (fixture, seed, criterion, partitioner)
-cell:
+Chains a community-detection algorithm (Leiden-Mod, Leiden-CPM, or
+SBM-Flat-PP) to produce the input partition, then runs the WCC tracer +
+JS self-RNG check on that partition. Per (fixture, seed, criterion,
+partitioner) cell:
 
   Partitioner = leiden-mod:
     leiden_kernel_check <edge.csv> <out.csv> mod 1.0 <seed> 1
@@ -25,11 +25,13 @@ cell:
                             <criterion> <seed>
       → bit-equal lockstep check; exit 0 = PASS
 
-Panel = 17-fixture undirected non-bipartite (reference_cd_stress_tiers.md):
-T1 (11, n<3K) + T2 (4, n<15K) + T3 (2, n<24K). Seed set: 9 diverse seeds
-(skipping seed=0 per igraph quirk inherited via VieCut chain). Criterion
-sweep: {1log_10(n), 2log_10(n), 1log_2(n)} — same as legacy synth-partition
-stress matrix at tools/viz_check/wcc/stress_matrix.sh.
+Panel = bumped 3-tier (every network in
+`data/empirical_networks/networks/` with `n ≤ 30000` per
+`_common/empirical_panel.py`; 161 fixtures, 50 seeds = 8050 cells per
+partitioner per criterion). Seeds skip 0 per igraph quirk inherited via
+VieCut chain. Criterion sweep: {1log_10(n), 2log_10(n), 1log_2(n)} —
+same as legacy synth-partition stress matrix at
+tools/viz_check/wcc/stress_matrix.sh.
 
 PASS = 0 mismatches per cell across:
   - row-E sub-term probes (pre_log_bits, log_n_bits) lockstep
@@ -42,7 +44,8 @@ PASS = 0 mismatches per cell across:
 Usage:
     python stress_3tier.py [--tiers T1,T2,T3] [--seeds s1,...]
                             [--criteria c1,c2,c3] [--workers N]
-                            [--partitioners leiden-mod,sbm-flat-pp]
+                            [--partitioners leiden-mod,leiden-cpm,sbm-flat-pp]
+                            [--leiden-cpm-resolution 0.5]
                             [--sbm-K 8] [--sbm-sweeps 10,5,2]
                             [--quick] [--timeout 1200]
 """
@@ -61,9 +64,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "_common"))
 import driver as D  # noqa: E402
+from empirical_panel import discover_panel, SEEDS_50  # noqa: E402
 
 REPO = D.repo_root_from_here(HERE)
-NETS = REPO.parent / "data" / "empirical_networks" / "networks"
 LEIDEN_TRACER = Path("/tmp/leiden_kernel_check")
 SBM_TRACER = Path("/tmp/sbm_flat_kernel_check")
 WCC_TRACER = Path("/tmp/wcc_kernel_check_swapped")
@@ -72,39 +75,12 @@ CHECK = HERE / "self_rng_check.mjs"
 # Tier ordinal used to pick the per-tier sweep count for sbm-flat-pp.
 TIER_ORDER = ["T1", "T2", "T3"]
 
-TIERS = {
-    "T1": [
-        ("copenhagen", "copenhagen_fb_friends", 800),
-        ("product_space", "product_space_HS", 866),
-        ("dnc", "dnc", 906),
-        ("euroroad", "euroroad", 1174),
-        ("facebook_organizations", "facebook_organizations_M1", 1429),
-        ("netscience", "netscience", 1461),
-        ("new_zealand_collab", "new_zealand_collab", 1511),
-        ("collins_yeast", "collins_yeast", 1622),
-        ("bible_nouns", "bible_nouns", 1773),
-        ("interactome_yeast", "interactome_yeast", 1846),
-        ("drosophila_flybi", "drosophila_flybi", 2906),
-    ],
-    "T2": [
-        ("arxiv_authors", "arxiv_authors_HepTh", 9875),
-        ("sp_infectious", "sp_infectious", 10972),
-        ("arxiv_authors", "arxiv_authors_HepPh", 12006),
-        ("physics_collab", "physics_collab_arXiv", 14065),
-    ],
-    "T3": [
-        ("internet_as", "internet_as", 22963),
-        ("arxiv_authors", "arxiv_authors_CondMat", 23133),
-    ],
-}
-
-# Seed=0 excluded per igraph quirk inherited via VieCut chain.
-DEFAULT_SEEDS = [1, 7, 13, 42, 99, 137, 1729, 65535, 2147483646]
 DEFAULT_CRITERIA = ["1log_10(n)", "2log_10(n)", "1log_2(n)"]
-DEFAULT_PARTITIONERS = ["leiden-mod", "sbm-flat-pp"]
-# Leiden quality: mod with default resolution (no gamma).
-LEIDEN_QUALITY = "mod"
-LEIDEN_QUALITY_PARAM = "1.0"
+DEFAULT_PARTITIONERS = ["leiden-mod", "leiden-cpm", "sbm-flat-pp"]
+# Leiden-Mod: param=1.0 (no gamma).
+LEIDEN_MOD_PARAM = "1.0"
+# Leiden-CPM: gamma default 0.5 (matches CC/CM/VieCut symmetric panel).
+DEFAULT_LEIDEN_CPM_RESOLUTION = 0.5
 # SBM-Flat-PP defaults; same K=8 + per-tier sweeps as the upstream
 # tools/viz_check/sbm/diagnostic/stress_3tier.py driver.
 SBM_K = 8
@@ -167,13 +143,17 @@ def _sbm_final_to_com(trace_json: Path, com_path: Path) -> bool:
 
 
 def _leiden_partition(edge_path: Path, com_path: Path, seed: int,
-                      err_path: Path, timeout: int) -> tuple[bool, str]:
-    """Run Leiden-Mod (quality=mod, param=1.0, iters=1). On success,
-    com_path contains node_id,cluster_id."""
+                      err_path: Path, timeout: int,
+                      quality: str = "mod",
+                      param: str = LEIDEN_MOD_PARAM
+                      ) -> tuple[bool, str]:
+    """Run Leiden tracer (iters=1) at the requested quality/param. On
+    success, com_path contains node_id,cluster_id. Defaults match
+    Leiden-Mod (quality=mod, param=1.0)."""
     try:
         rc = subprocess.run(
             [str(LEIDEN_TRACER), str(edge_path), str(com_path),
-             LEIDEN_QUALITY, LEIDEN_QUALITY_PARAM, str(seed), "1"],
+             quality, str(param), str(seed), "1"],
             capture_output=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
@@ -218,7 +198,7 @@ def _sbm_partition(edge_path: Path, com_path: Path, seed: int, sweeps: int,
 
 def run_cell(name: str, edge: str, tier: str, seed: int, criterion: str,
              partitioner: str, sbm_K: int, sbm_sweeps_per_tier: dict[str, int],
-             timeout: int, scratch: str
+             leiden_cpm_resolution: float, timeout: int, scratch: str
              ) -> tuple[str, str, str, int, str, bool, int, int, int, str]:
     """One (partitioner, fixture, seed, criterion) cell.
 
@@ -236,9 +216,14 @@ def run_cell(name: str, edge: str, tier: str, seed: int, criterion: str,
     err = scratch_dir / f"{tag}.partitioner.err"
     wcc_err = scratch_dir / f"{tag}.wcc.err"
 
-    # 1. Partitioner: either Leiden-Mod or SBM-Flat-PP.
+    # 1. Partitioner: Leiden-Mod, Leiden-CPM, or SBM-Flat-PP.
     if partitioner == "leiden-mod":
-        ok_p, msg = _leiden_partition(edge_path, com, seed, err, timeout)
+        ok_p, msg = _leiden_partition(edge_path, com, seed, err, timeout,
+                                      quality="mod", param=LEIDEN_MOD_PARAM)
+    elif partitioner == "leiden-cpm":
+        ok_p, msg = _leiden_partition(edge_path, com, seed, err, timeout,
+                                      quality="cpm",
+                                      param=str(leiden_cpm_resolution))
     elif partitioner == "sbm-flat-pp":
         sweeps = sbm_sweeps_per_tier.get(tier, 5)
         ok_p, msg = _sbm_partition(edge_path, com, seed, sweeps, sbm_K,
@@ -309,10 +294,15 @@ def run_cell(name: str, edge: str, tier: str, seed: int, criterion: str,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tiers", default="T1,T2,T3")
-    ap.add_argument("--seeds", default=",".join(str(s) for s in DEFAULT_SEEDS))
+    ap.add_argument("--seeds", default=",".join(str(s) for s in SEEDS_50))
     ap.add_argument("--criteria", default=",".join(DEFAULT_CRITERIA))
-    ap.add_argument("--partitioners", default=",".join(DEFAULT_PARTITIONERS),
-                    help="comma-separated subset of {leiden-mod,sbm-flat-pp}")
+    ap.add_argument("--partitioners", default="leiden-mod,sbm-flat-pp",
+                    help="comma-separated subset of "
+                         "{leiden-mod,leiden-cpm,sbm-flat-pp}")
+    ap.add_argument("--leiden-cpm-resolution", type=float,
+                    default=DEFAULT_LEIDEN_CPM_RESOLUTION,
+                    help="gamma for the leiden-cpm partitioner (ignored "
+                         "otherwise). Default 0.5 matches the symmetric panel.")
     ap.add_argument("--sbm-K", type=int, default=SBM_K,
                     help="initial block count for sbm-flat-pp synth init")
     ap.add_argument("--sbm-sweeps", default="10,5,2",
@@ -323,6 +313,8 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=1200,
                     help="per-cell timeout in seconds (T3 cells need >=1200s)")
     ap.add_argument("--scratch", default="/tmp/wcc_stress_3tier_chain")
+    ap.add_argument("--max-per-tier", type=int, default=0,
+                    help="cap fixture count per tier (0 = unlimited)")
     args = ap.parse_args()
 
     tiers = args.tiers.split(",")
@@ -331,13 +323,14 @@ def main() -> int:
         if p not in DEFAULT_PARTITIONERS:
             sys.exit(f"unknown partitioner: {p} "
                      f"(expected subset of {DEFAULT_PARTITIONERS})")
+    panel = discover_panel(REPO)
     if args.quick:
-        seeds = DEFAULT_SEEDS[:3]
-        fixtures_per_tier = 1
+        seeds = SEEDS_50[:3]
+        per_tier_cap = 1
         criteria = DEFAULT_CRITERIA[:1]
     else:
         seeds = [int(s) for s in args.seeds.split(",")]
-        fixtures_per_tier = None
+        per_tier_cap = args.max_per_tier or None
         criteria = [c.strip() for c in args.criteria.split(",") if c.strip()]
 
     sbm_sweeps_list = [int(s) for s in args.sbm_sweeps.split(",")]
@@ -346,7 +339,7 @@ def main() -> int:
         sbm_sweeps_per_tier[t] = sbm_sweeps_list[min(i, len(sbm_sweeps_list) - 1)]
 
     needed_bins: list[Path] = [WCC_TRACER]
-    if "leiden-mod" in partitioners:
+    if "leiden-mod" in partitioners or "leiden-cpm" in partitioners:
         needed_bins.append(LEIDEN_TRACER)
     if "sbm-flat-pp" in partitioners:
         needed_bins.append(SBM_TRACER)
@@ -357,35 +350,33 @@ def main() -> int:
     # Build cell list, grouped per tier.
     # Cell tuple: (name, edge, tier, seed, criterion, partitioner)
     tier_cells: dict[str, list[tuple[str, str, str, int, str, str]]] = {}
-    skipped: list[str] = []
     for tier in tiers:
-        if tier not in TIERS:
+        if tier not in panel:
             sys.exit(f"unknown tier: {tier}")
-        fixtures = TIERS[tier]
-        if fixtures_per_tier is not None:
-            fixtures = fixtures[:fixtures_per_tier]
+        fixtures = panel[tier]
+        if per_tier_cap is not None:
+            fixtures = fixtures[:per_tier_cap]
         cells: list[tuple[str, str, str, int, str, str]] = []
-        for subdir, base, _n in fixtures:
-            edge = NETS / subdir / f"{base}.csv"
-            if not edge.is_file():
-                skipped.append(f"{tier}/{base} (missing {edge})")
-                continue
+        for fx in fixtures:
             for partitioner in partitioners:
                 for seed in seeds:
                     for crit in criteria:
-                        cells.append((base, str(edge), tier, seed, crit, partitioner))
+                        cells.append((fx["subnet"], fx["edge"], tier, seed,
+                                      crit, partitioner))
         tier_cells[tier] = cells
 
     total_cells = sum(len(c) for c in tier_cells.values())
-    print(f"WCC L4 3-tier stress: tiers={','.join(tiers)} "
+    print(f"WCC L4 bumped 3-tier stress: tiers={','.join(tiers)} "
           f"partitioners={','.join(partitioners)} "
           f"seeds={len(seeds)} criteria={len(criteria)} "
           f"workers={args.workers} timeout={args.timeout}s "
           f"total_cells={total_cells}")
+    if "leiden-cpm" in partitioners:
+        print(f"  leiden-cpm: gamma={args.leiden_cpm_resolution}")
     if "sbm-flat-pp" in partitioners:
         print(f"  sbm-flat-pp: K={args.sbm_K} sweeps_per_tier={sbm_sweeps_per_tier}")
-    for s in skipped:
-        print(f"  SKIP {s}")
+    for tier in tiers:
+        print(f"  {tier}: {len(panel[tier])} fixtures")
     print()
     sys.stdout.flush()
 
@@ -415,6 +406,7 @@ def main() -> int:
         with ProcessPoolExecutor(max_workers=args.workers) as ex:
             futures = [
                 ex.submit(run_cell, *c, args.sbm_K, sbm_sweeps_per_tier,
+                          args.leiden_cpm_resolution,
                           args.timeout, args.scratch)
                 for c in cells
             ]

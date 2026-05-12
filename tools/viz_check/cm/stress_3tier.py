@@ -1,8 +1,9 @@
-"""CM L4 3-tier empirical-network stress driver.
+"""CM L4 bumped 3-tier empirical-network stress driver.
 
-Runs the CM L4 self-RNG byte-equal check on the standard 17-fixture
-undirected non-bipartite panel from reference_cd_stress_tiers.md, sweeping
-the standard 9 seeds × {leiden-cpm:0.0001, leiden-mod:N/A} × 1log_10(n).
+Runs the CM L4 self-RNG byte-equal check on the bumped 3-tier panel
+(every network in `data/empirical_networks/networks/` with `n ≤ 30000`
+per `_common/empirical_panel.py`; 161 fixtures, 50 seeds = 8050 cells
+per algorithm) × {leiden-cpm:0.0001, leiden-mod:N/A} × 1log_10(n).
 CM tracer chains VieCut + Leiden + WCC + log10 (per cm_audit.md row D =
 WCC threshold, row A = TWO RNG streams).
 
@@ -38,45 +39,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "_common"))
 import driver as D  # noqa: E402
+from empirical_panel import discover_panel, SEEDS_50  # noqa: E402
 
 REPO = D.repo_root_from_here(HERE)
-# Empirical networks live at netsci-research/data/empirical_networks/...
-# under the main repo (not inside the worktree). Allow override via
-# environment for portability.
-NETS_DEFAULT = Path("/home/vltanh/Documents/netsci-research/data/empirical_networks/networks")
-NETS = Path(os.environ.get("NETS", str(NETS_DEFAULT)))
 CM_TRACER = Path("/tmp/cm_kernel_check_swapped")
 LEIDEN_TRACER = Path("/tmp/leiden_kernel_check")
 SBM_TRACER = Path("/tmp/sbm_flat_kernel_check")
 CHECK = HERE / "self_rng_check.mjs"
 
-TIERS = {
-    "T1": [
-        ("copenhagen", "copenhagen_fb_friends", 800),
-        ("product_space", "product_space_HS", 866),
-        ("dnc", "dnc", 906),
-        ("euroroad", "euroroad", 1174),
-        ("facebook_organizations", "facebook_organizations_M1", 1429),
-        ("netscience", "netscience", 1461),
-        ("new_zealand_collab", "new_zealand_collab", 1511),
-        ("collins_yeast", "collins_yeast", 1622),
-        ("bible_nouns", "bible_nouns", 1773),
-        ("interactome_yeast", "interactome_yeast", 1846),
-        ("drosophila_flybi", "drosophila_flybi", 2906),
-    ],
-    "T2": [
-        ("arxiv_authors", "arxiv_authors_HepTh", 9875),
-        ("sp_infectious", "sp_infectious", 10972),
-        ("arxiv_authors", "arxiv_authors_HepPh", 12006),
-        ("physics_collab", "physics_collab_arXiv", 14065),
-    ],
-    "T3": [
-        ("internet_as", "internet_as", 22963),
-        ("arxiv_authors", "arxiv_authors_CondMat", 23133),
-    ],
-}
-
-DEFAULT_SEEDS = [1, 7, 13, 42, 99, 137, 1729, 65535, 2147483646]
 CRITERION = "1log_10(n)"
 
 
@@ -284,7 +254,7 @@ def run_cell(name: str, edge: str, seed: int, input_source: str,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tiers", default="T1,T2,T3")
-    ap.add_argument("--seeds", default=",".join(str(s) for s in DEFAULT_SEEDS))
+    ap.add_argument("--seeds", default=",".join(str(s) for s in SEEDS_50))
     ap.add_argument("--input-source", default="leiden",
                     choices=("leiden", "sbm-flat-pp"),
                     help="CM input partition source (default leiden)")
@@ -301,15 +271,18 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=1800,
                     help="per-cell timeout in seconds (T3 cells: bump to >=1800)")
     ap.add_argument("--scratch", default="/tmp/cm_stress_3tier")
+    ap.add_argument("--max-per-tier", type=int, default=0,
+                    help="cap fixture count per tier (0 = unlimited)")
     args = ap.parse_args()
 
     tiers = args.tiers.split(",")
+    panel = discover_panel(REPO)
     if args.quick:
-        seeds = DEFAULT_SEEDS[:3]
-        fixtures_per_tier: int | None = 1
+        seeds = SEEDS_50[:3]
+        per_tier_cap: int | None = 1
     else:
         seeds = [int(s) for s in args.seeds.split(",")]
-        fixtures_per_tier = None
+        per_tier_cap = args.max_per_tier or None
 
     if not CM_TRACER.is_file():
         sys.exit(f"CM tracer binary missing: {CM_TRACER}\n"
@@ -322,32 +295,27 @@ def main() -> int:
                  f"build via: bash {REPO}/tools/viz_check/sbm/instrumented/build.sh")
 
     tier_cells: dict[str, list[tuple[str, str, int]]] = {}
-    skipped: list[str] = []
     for tier in tiers:
-        if tier not in TIERS:
+        if tier not in panel:
             sys.exit(f"unknown tier: {tier}")
-        fixtures = TIERS[tier]
-        if fixtures_per_tier is not None:
-            fixtures = fixtures[:fixtures_per_tier]
+        fixtures = panel[tier]
+        if per_tier_cap is not None:
+            fixtures = fixtures[:per_tier_cap]
         cells: list[tuple[str, str, int]] = []
-        for subdir, base, _n in fixtures:
-            edge = NETS / subdir / f"{base}.csv"
-            if not edge.is_file():
-                skipped.append(f"{tier}/{base} (missing {edge})")
-                continue
+        for fx in fixtures:
             for seed in seeds:
-                cells.append((base, str(edge), seed))
+                cells.append((fx["subnet"], fx["edge"], seed))
         tier_cells[tier] = cells
 
     total_cells = sum(len(c) for c in tier_cells.values())
-    print(f"CM L4 3-tier stress: input_source={args.input_source} "
+    print(f"CM L4 bumped 3-tier stress: input_source={args.input_source} "
           f"algorithm={args.algorithm} resolution={args.resolution} "
           f"tiers={','.join(tiers)} seeds={len(seeds)} "
           f"workers={args.workers} timeout={args.timeout}s "
           f"total_cells={total_cells}")
     print(f"  criterion={CRITERION} sbm_sweeps={args.sbm_sweeps}")
-    for s in skipped:
-        print(f"  SKIP {s}")
+    for tier in tiers:
+        print(f"  {tier}: {len(panel[tier])} fixtures")
     print()
     sys.stdout.flush()
 

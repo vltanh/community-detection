@@ -1,12 +1,13 @@
-"""CC L4 3-tier empirical-network stress driver.
+"""CC L4 bumped 3-tier empirical-network stress driver.
 
-Runs the CC byte-equal cross-check on the canonical 3-tier panel from
-reference_cd_stress_tiers.md (17 fixtures across T1/T2/T3, n=800..23,133)
-under one of several input-partition sources. The partition source does
-not bear on CC's byte-equal contract (CC is deterministic BFS over an
-input partition; rows A-M in cc_audit.md are unchanged across input
-shapes) but a richer input panel exercises more (graph, partition)
-combinations of the kernel's only state.
+Runs the CC byte-equal cross-check on the bumped 3-tier panel (every
+network in `data/empirical_networks/networks/` with `n ≤ 30000` per
+`_common/empirical_panel.py`; 161 fixtures, 50 seeds = 8050 cells per
+partition variant) under one of several input-partition sources. The
+partition source does not bear on CC's byte-equal contract (CC is
+deterministic BFS over an input partition; rows A-M in cc_audit.md are
+unchanged across input shapes) but a richer input panel exercises more
+(graph, partition) combinations of the kernel's only state.
 
 Input-partition variants (--partition):
   - sbm-flat-pp: SBM Flat-PP MCMC final_membership (Zhang+Peixoto 2020),
@@ -55,9 +56,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "_common"))
 import driver as D  # noqa: E402
+from empirical_panel import discover_panel, SEEDS_50  # noqa: E402
 
 REPO = D.repo_root_from_here(HERE)
-NETS = REPO.parent / "data" / "empirical_networks" / "networks"
 SBM_TRACER = Path("/tmp/sbm_flat_kernel_check")
 LEIDEN_TRACER = Path("/tmp/leiden_kernel_check")
 CC_CANON = Path("/tmp/cc_kernel_check_canonical")
@@ -66,33 +67,6 @@ JS_REPLAY = HERE / "kernel_check.mjs"
 SBM_BUILD_DIR = REPO / "tools" / "viz_check" / "sbm"
 LEIDEN_BUILD_DIR = REPO / "tools" / "viz_check" / "leiden"
 
-TIERS = {
-    "T1": [
-        ("copenhagen", "copenhagen_fb_friends", 800),
-        ("product_space", "product_space_HS", 866),
-        ("dnc", "dnc", 906),
-        ("euroroad", "euroroad", 1174),
-        ("facebook_organizations", "facebook_organizations_M1", 1429),
-        ("netscience", "netscience", 1461),
-        ("new_zealand_collab", "new_zealand_collab", 1511),
-        ("collins_yeast", "collins_yeast", 1622),
-        ("bible_nouns", "bible_nouns", 1773),
-        ("interactome_yeast", "interactome_yeast", 1846),
-        ("drosophila_flybi", "drosophila_flybi", 2906),
-    ],
-    "T2": [
-        ("arxiv_authors", "arxiv_authors_HepTh", 9875),
-        ("sp_infectious", "sp_infectious", 10972),
-        ("arxiv_authors", "arxiv_authors_HepPh", 12006),
-        ("physics_collab", "physics_collab_arXiv", 14065),
-    ],
-    "T3": [
-        ("internet_as", "internet_as", 22963),
-        ("arxiv_authors", "arxiv_authors_CondMat", 23133),
-    ],
-}
-
-DEFAULT_SEEDS = [1, 7, 13, 42, 99, 137, 1729, 65535, 2147483646]
 # Sweep schedule mirrors sbm/diagnostic/stress_3tier.py (T1=5, T2=3, T3=2).
 # Sweep depth affects which partition lands in CC but not CC's byte-equal
 # contract — CC is deterministic and partition-input agnostic.
@@ -372,7 +346,7 @@ def run_cell(name: str, edge: str, seed: int, sweeps: int, partition: str,
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tiers", default="T1,T2,T3")
-    ap.add_argument("--seeds", default=",".join(str(s) for s in DEFAULT_SEEDS))
+    ap.add_argument("--seeds", default=",".join(str(s) for s in SEEDS_50))
     ap.add_argument("--workers", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--quick", action="store_true",
                     help="3 seeds × 1 fixture per tier (smoke).")
@@ -388,16 +362,19 @@ def main() -> int:
                     help="Resolution gamma for leiden-cpm (ignored otherwise). "
                          "Default 0.5 matches the canonical symmetric-coverage panel.")
     ap.add_argument("--scratch", default="/tmp/cc_stress_3tier")
+    ap.add_argument("--max-per-tier", type=int, default=0,
+                    help="cap fixture count per tier (0 = unlimited)")
     args = ap.parse_args()
 
     tier_sweeps = {"T1": args.sweeps_t1, "T2": args.sweeps_t2, "T3": args.sweeps_t3}
     tiers = args.tiers.split(",")
+    panel = discover_panel(REPO)
     if args.quick:
-        seeds = DEFAULT_SEEDS[:3]
-        fixtures_per_tier = 1
+        seeds = SEEDS_50[:3]
+        per_tier_cap = 1
     else:
         seeds = [int(s) for s in args.seeds.split(",")]
-        fixtures_per_tier = None
+        per_tier_cap = args.max_per_tier or None
 
     # Build CC tracers (no-op if up to date).
     D.build_tracer(HERE, CC_CANON)
@@ -419,22 +396,17 @@ def main() -> int:
 
     # Build cell list, grouped per tier.
     tier_cells: dict[str, list[tuple[str, str, int, int]]] = {}
-    skipped: list[str] = []
     for tier in tiers:
-        if tier not in TIERS:
+        if tier not in panel:
             sys.exit(f"unknown tier: {tier}")
-        fixtures = TIERS[tier]
-        if fixtures_per_tier is not None:
-            fixtures = fixtures[:fixtures_per_tier]
+        fixtures = panel[tier]
+        if per_tier_cap is not None:
+            fixtures = fixtures[:per_tier_cap]
         cells: list[tuple[str, str, int, int]] = []
         sweeps = tier_sweeps[tier]
-        for subdir, base, _n in fixtures:
-            edge = NETS / subdir / f"{base}.csv"
-            if not edge.is_file():
-                skipped.append(f"{tier}/{base} (missing {edge})")
-                continue
+        for fx in fixtures:
             for seed in seeds:
-                cells.append((base, str(edge), seed, sweeps))
+                cells.append((fx["subnet"], fx["edge"], seed, sweeps))
         tier_cells[tier] = cells
 
     total_cells = sum(len(c) for c in tier_cells.values())
@@ -442,11 +414,11 @@ def main() -> int:
         partition_tag = f"leiden-cpm(gamma={args.resolution})"
     else:
         partition_tag = args.partition
-    print(f"CC L4 3-tier stress ({partition_tag} input): tiers={','.join(tiers)} "
+    print(f"CC L4 bumped 3-tier stress ({partition_tag} input): tiers={','.join(tiers)} "
           f"seeds={len(seeds)} workers={args.workers} timeout={args.timeout}s "
           f"sweeps={tier_sweeps} total_cells={total_cells}")
-    for s in skipped:
-        print(f"  SKIP {s}")
+    for tier in tiers:
+        print(f"  {tier}: {len(panel[tier])} fixtures")
     print()
     sys.stdout.flush()
 

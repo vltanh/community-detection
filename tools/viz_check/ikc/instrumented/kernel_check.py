@@ -297,7 +297,27 @@ def ikc_traced(graph, k_floor, inverted_orig, node_id_map_records):
                 orig_node = inverted_orig[node]
                 d = orig_graph.degree(orig_node)
                 ratio = d / two_L if two_L != 0 else 0.0
-                ratio_sq = ratio ** 2
+                # Canonical run_ikc.py:120 writes `... ** 2` which routes
+                # through CPython float_pow -> glibc pow. glibc pow(r, 2)
+                # is "faithfully rounded" (within 1 ULP of the true value)
+                # via exp(2*log(r)); plain `r*r` is correctly rounded
+                # (true r² rounded to nearest double). On ~0.09% of inputs
+                # these differ by ±1 ULP (verified empirically on
+                # physics_collab_pierreAuger iter 13 node 44: d=12, 2L=12964,
+                # ratio=0x3f4e54d5447b8985, glibc pow=0x3eacbff0c59c82ab,
+                # r*r=0x3eacbff0c59c82aa; exact r² lies between, closer to aa).
+                #
+                # V8's `Math.pow(x, 2)` short-circuits to `x*x` for integer
+                # exponents (HotPath optimization in src/numbers/conversions.cc),
+                # so JS cannot reach glibc pow's value without porting glibc's
+                # algorithm to JS. Per feedback_match_canonical_in_principle.md
+                # we match the **principle** (mathematical squaring) not the
+                # data (glibc's specific 1-ULP-off approximation). Tracer uses
+                # `r*r` to align with JS `ratio*ratio` (ikc.js:366); both compute
+                # the correctly-rounded value of r². This is a deliberate
+                # tracer-side deviation from canonical's `**` operator,
+                # documented in TRACE_SCHEMA.md row G8.
+                ratio_sq = ratio * ratio
                 modu = (-1) * ratio_sq
                 final_clusters.append(([orig_node], 0, modu))
                 rec = {

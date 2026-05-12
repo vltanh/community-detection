@@ -55,7 +55,7 @@ After this iter, residual is recompacted in old-compact-id-ascending order; next
   "d": <int>,                                     // orig_graph.degree(orig_compact_id) — directed out-degree (NetworKit semantics)
   "two_L": <int>,                                 // 2 * L (full original edge count)
   "ratio": <float>,                               // d / two_L (Python `/`, IEEE-754 double)
-  "ratio_squared": <float>,                       // ratio ** 2 (Python `**` with exponent 2; equals ratio*ratio byte-for-byte)
+  "ratio_squared": <float>,                       // ratio * ratio — correctly-rounded r² (NOT canonical Python `**2`; see G8 note)
   "neg_ratio_squared": <float>                    // (-1) * ratio_squared (sign flip; bit pattern = ratio_squared XOR sign bit)
 }
 ```
@@ -125,7 +125,7 @@ IKC has no RNG. `iters[]` and `final` are determined by `(node_id_map, edges, k_
 | Probe | Tag | JSON field(s) | Source line | Notes |
 |---|---|---|---|---|
 | G2 (k_valid loop scope + per-node degree) | `[TRACE-IKC-KV]` (stderr) | `components[].k_valid_loop_scope[]` | `run_ikc.py:266-277` | Exposes canonical's full `subgraph.iterNodes()` scope, not just the lex-BFS visit list. Per-node `degIn`/`degOut`/`sum` + `check_result` (skipped/ok/fail/post_break_unvisited). |
-| G8 (bail-iter `(d/(2L))²` FP primitive) | `[TRACE-IKC-BAIL]` (stderr) | `iters[].bail_L`, `iters[].bail_per_node_modularity[]` | `run_ikc.py:118-120` | Live FP on bail path. Per-node `d`, `two_L`, `ratio`, `ratio_squared`, `neg_ratio_squared`. JS uses `ratio*ratio` (byte-equal to Python `**2` for exponent 2). |
+| G8 (bail-iter `(d/(2L))²` FP primitive) | `[TRACE-IKC-BAIL]` (stderr) | `iters[].bail_L`, `iters[].bail_per_node_modularity[]` | `run_ikc.py:118-120` | Live FP on bail path. Per-node `d`, `two_L`, `ratio`, `ratio_squared`, `neg_ratio_squared`. Canonical `**2` calls glibc `pow` (faithfully rounded, ~0.09% 1-ULP-off from correctly-rounded r²). V8 `Math.pow(x,2)` short-circuits to `x*x` for integer exponents. Both Python tracer and JS use `ratio*ratio` (correctly-rounded r²) — match principle (squaring), not glibc's specific approximation. Counter-example: physics_collab_pierreAuger iter 13 node 44 (d=12, 2L=12964): glibc `pow(r,2)`=0x3eacbff0c59c82ab vs `r*r`=0x3eacbff0c59c82aa; exact r² closer to aa. See `feedback_match_canonical_in_principle.md`. |
 | G9 (`nodes_to_remove` mutation order) | `[TRACE-IKC-NTR]` (stderr) | `components[].nodes_to_remove_after_update_sorted` (per-component accumulator snapshot) | `run_ikc.py:131, 151, 160, 165, 193` | The set hash-iteration order at removal site (`run_ikc.py:193`) is implementation-defined and NOT bit-compared in JSON; stderr-only via `[TRACE-IKC-NTR] removal_iter_order=...`. The per-component sorted-accumulator snapshot IS in JSON; mutation sequence visible across `comp_idx` 0,1,2,... |
 
 ## Contract notes

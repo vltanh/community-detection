@@ -49,6 +49,11 @@ implementation detail and source-code pointers.
   3-tier × Leiden-CPM(γ=0.5) 153 cells + 3-tier × Leiden-Mod 153 cells
   + 3-tier × SBM-Flat-PP 153 cells + n &gt; 10000 LP-LCC 150 cells).
   Verification target is L4 (self-RNG end-to-end, no oracle replay).
+- Bumped 3-tier panel L4 (2026-05-11, T1+T2): legacy-whole-graph
+  7400/7400 PASS (9.27M records); chained-from-leiden-mod 7400/7400
+  PASS (2.82M records); chained-from-leiden-cpm(0.5) T1 5850/5850 PASS
+  (4.03M records); chain-from-infomap and chain-from-sbm-flat-pp queued
+  for resume. See `audit.md` for the full panel breakdown.
 
 ## Entrypoint
 
@@ -411,18 +416,35 @@ python3 tools/viz_check/viecut/stress_3tier.py \
     --partition leiden-cpm   # or leiden-mod / sbm-flat-pp
 ```
 
+## Tracer probe coverage
+
+The instrumented C++ tracer + JS observer pair emit per-step probe
+tags across the audit-row map (A-N). All P0 sites enumerated in the
+tracer-coverage gap audit are closed via canonical-side probes plus
+matching JS-side observer probes; the probes are monotonically additive
+per the "tracer prints stay" discipline. New sibling headers (under
+[`tools/viz_check/viecut/instrumented/include/`](../../tools/viz_check/viecut/instrumented/include/))
+extend `random_functions.h` with `permutate_vector_local_traced`, add
+a `push_relabel.h` sibling with T16/T17/T18 probes, and add a
+`label_propagation.h` sibling for LP-body tie-break probes. Equivalence
+verified by build-pair on 9 fixtures × seed=42 plus JS observer-on vs
+observer-off comparison on 5 fixtures (final state bit-equal in every
+case).
+
 ## Cross-references in memory
 
 - [`viecut/codebase_map.md`](https://github.com/vltanh/.claude/blob/main/projects/-home-vltanh-Documents-netsci-research/memory/community-detection/viecut/codebase_map.md):
   repo layout, call graph, RNG sites, variant flags.
 - [`viecut/audit.md`](https://github.com/vltanh/.claude/blob/main/projects/-home-vltanh-Documents-netsci-research/memory/community-detection/viecut/audit.md):
-  audit grid A-M, per-row finding, diagnostic ladder L0-L4 results,
-  combined stress total.
+  audit grid A-N, per-row finding, diagnostic ladder L0-L4 results,
+  combined stress total, bumped 3-tier panel resume notes.
 - [`viecut/dossier.md`](https://github.com/vltanh/.claude/blob/main/projects/-home-vltanh-Documents-netsci-research/memory/community-detection/viecut/dossier.md):
-  per-step semantics, state schema, full tie-break decision-site list,
-  variable-name mapping.
+  per-step semantics, state schema, full tie-break decision-site list
+  (T1-T33), variable-name mapping.
 - [`viecut/pq_variants.md`](https://github.com/vltanh/.claude/blob/main/projects/-home-vltanh-Documents-netsci-research/memory/community-detection/viecut/pq_variants.md):
   the `pq` config-string vs class-name table.
+- [`viecut/tracer_coverage_gaps.md`](https://github.com/vltanh/.claude/blob/main/projects/-home-vltanh-Documents-netsci-research/memory/community-detection/viecut/tracer_coverage_gaps.md):
+  P0/P1/P2 probe-coverage audit with closure status per site.
 
 ## Where to look next
 

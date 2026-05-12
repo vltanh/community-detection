@@ -35,7 +35,17 @@ if (!["dc", "ndc", "pp"].includes(mode)) {
   process.exit(2);
 }
 
-const trace = JSON.parse(fs.readFileSync(tracePath, "utf8"));
+// cpp tracer emits NaN / +/-Infinity as the JSON string tokens
+// "NaN" / "Infinity" / "-Infinity" — see self_rng_check.mjs for the
+// motivating site (OOB-tolerant ers_at in nested mode when
+// candidatePool returns a fresh-block target s == B).
+function nanReviver(_k, v) {
+  if (v === "NaN") return NaN;
+  if (v === "Infinity") return Infinity;
+  if (v === "-Infinity") return -Infinity;
+  return v;
+}
+const trace = JSON.parse(fs.readFileSync(tracePath, "utf8"), nanReviver);
 if (nestedFlag) {
   if (trace.variant !== `nested-${mode}`) {
     console.error(`trace variant "${trace.variant}" != cli "nested-${mode}"`);

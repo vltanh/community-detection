@@ -103,6 +103,11 @@ def run_one(name: str, edge: Path, com: Path, work: Path,
     if args.verbose:
         sys.stderr.write(rc.stderr)
 
+    # cpp tracer emits NaN / +/-Infinity as the JSON string tokens
+    # "NaN" / "Infinity" / "-Infinity" (see flat_traced.cpp JEmit). The
+    # python check leg only reads finite scalars (S_init, S_final,
+    # level_S_init/final, Bne_*); per-visit NaN-bearing fields are not
+    # consumed here, so a default parse is sufficient.
     trace = json.loads(out_json.read_text())
     S_init = trace["S_init"]
     S_final = trace["S_final"]

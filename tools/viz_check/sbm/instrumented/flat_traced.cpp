@@ -28,6 +28,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <random>
 #include <sstream>
@@ -456,8 +457,49 @@ struct BlockState {
         rebuildFromMembership();
     }
 
+    // ── JS-typed-array OOB-tolerant accessors ─────────────────────────
+    // Mirror comdet/js/sbm/block_state.js Int32Array / Float64Array
+    // out-of-range semantics. The dense `B = N` capacity is shared by
+    // cpp + JS, but candidatePool can propose a fresh-block id
+    // maxId+1 == B when every slot is occupied (most aggressive in the
+    // nested upper levels where N is small, e.g. N=2 at level 2 of a
+    // 16-node fixture). JS Int32Array[s>=B] / Float64Array[s>=B] read
+    // returns `undefined`, which coerces to 0 in `>` / `==` tests and to
+    // NaN in arithmetic; OOB writes are silently dropped. cpp
+    // std::vector OOB is undefined behaviour and surfaces as heap-
+    // corruption on small T1 fixtures (n <= ~50 nested-dc/ndc). The
+    // accessors below replicate JS semantics so cpp + JS stay bit-equal
+    // and ASAN-clean. Pattern documented in audit row "Known latent
+    // limit (B = N capacity)".
+    inline int nr_at(int idx) const {
+        return (idx >= 0 && idx < B) ? nr[idx] : 0;
+    }
+    inline double er_at(int idx) const {
+        return (idx >= 0 && idx < B) ? er[idx] : 0.0;
+    }
+    // ers OOB read returns NaN to mirror JS `undefined + 1.0 = NaN`,
+    // which then propagates through trace_lgamma/jsLog into a NaN dS.
+    // Both legs short-circuit `dS <= 0` to false on NaN and consume one
+    // acceptUniform draw, so RNG streams stay aligned.
+    inline double ers_at(size_t idx) const {
+        return (idx < ers.size()) ? ers[idx] : std::numeric_limits<double>::quiet_NaN();
+    }
+    // OOB writes are silently dropped (mirror JS typed-array semantics).
+    inline void ers_set(size_t idx, double v) {
+        if (idx < ers.size()) ers[idx] = v;
+    }
+    inline void ers_add(size_t idx, double v) {
+        if (idx < ers.size()) ers[idx] += v;
+    }
+    inline void er_add(int idx, double v) {
+        if (idx >= 0 && idx < B) er[idx] += v;
+    }
+    inline void nr_add(int idx, int v) {
+        if (idx >= 0 && idx < B) nr[idx] += v;
+    }
+
     inline int blockOf(int v) const { return b[v]; }
-    inline int blockSize(int r) const { return nr[r]; }
+    inline int blockSize(int r) const { return nr_at(r); }
     void nonEmptyBlocks(std::vector<int>& out) const {
         out.assign(neList.begin(), neList.begin() + Bne);
     }
@@ -508,6 +550,13 @@ struct BlockState {
     void moveVertex(int v, int s) {
         int r = b[v];
         if (r == s) return;
+        // r is always in [0, B) since b[v] tracks live block ids; only
+        // s (the move target) can be out of range when candidatePool
+        // returns the fresh-block id maxId+1 == B. ers_add / er_add /
+        // nr_add silently drop OOB writes to mirror JS Int32Array /
+        // Float64Array semantics; the symmetric revert (moveVertex(v,
+        // fromR)) also no-ops on those OOB slots so the BlockState
+        // returns to its pre-virtualMove configuration.
         const auto& nb = g.nb[v];
         const auto& nbW = g.nbW[v];
         for (size_t i = 0; i < nb.size(); ++i) {
@@ -516,36 +565,36 @@ struct BlockState {
             double w = nbW[i];
             int t = b[u];
             if (t == r) {
-                ers[(size_t)r * B + r] -= 2.0 * w;
-                er[r] -= 2.0 * w;
+                ers_add((size_t)r * B + r, -2.0 * w);
+                er_add(r, -2.0 * w);
             } else {
-                ers[(size_t)r * B + t] -= w;
-                ers[(size_t)t * B + r] -= w;
-                er[r] -= w;
-                er[t] -= w;
+                ers_add((size_t)r * B + t, -w);
+                ers_add((size_t)t * B + r, -w);
+                er_add(r, -w);
+                er_add(t, -w);
             }
             if (t == s) {
-                ers[(size_t)s * B + s] += 2.0 * w;
-                er[s] += 2.0 * w;
+                ers_add((size_t)s * B + s, 2.0 * w);
+                er_add(s, 2.0 * w);
             } else {
-                ers[(size_t)s * B + t] += w;
-                ers[(size_t)t * B + s] += w;
-                er[s] += w;
-                er[t] += w;
+                ers_add((size_t)s * B + t, w);
+                ers_add((size_t)t * B + s, w);
+                er_add(s, w);
+                er_add(t, w);
             }
         }
         double sw = g.selfW[v];
         if (sw > 0.0) {
-            ers[(size_t)r * B + r] -= 2.0 * sw;
-            er[r] -= 2.0 * sw;
-            ers[(size_t)s * B + s] += 2.0 * sw;
-            er[s] += 2.0 * sw;
+            ers_add((size_t)r * B + r, -2.0 * sw);
+            er_add(r, -2.0 * sw);
+            ers_add((size_t)s * B + s, 2.0 * sw);
+            er_add(s, 2.0 * sw);
         }
-        bool wasROccupied = nr[r] > 0;
-        bool wasSOccupied = nr[s] > 0;
-        nr[r] -= 1;
-        nr[s] += 1;
-        if (wasROccupied && nr[r] == 0) {
+        bool wasROccupied = nr_at(r) > 0;
+        bool wasSOccupied = nr_at(s) > 0;
+        nr_add(r, -1);
+        nr_add(s, 1);
+        if (wasROccupied && nr_at(r) == 0) {
             int pos = neIdx[r];
             --Bne;
             int tail = neList[Bne];
@@ -553,7 +602,12 @@ struct BlockState {
             neIdx[tail] = pos;
             neIdx[r] = -1;
         }
-        if (!wasSOccupied && nr[s] > 0) {
+        if (!wasSOccupied && nr_at(s) > 0) {
+            // s in [0, B) here: nr_at returns nonzero only for valid
+            // slots; OOB writes were dropped so nr_at(s>=B)==0 and
+            // this branch is skipped (matches JS where the silently-
+            // dropped Int32Array write leaves nr[s] as undefined and
+            // `undefined > 0` is false).
             neIdx[s] = Bne;
             neList[Bne] = s;
             ++Bne;
@@ -689,31 +743,38 @@ struct BlockState {
     // version that walked t=0..B-1 - dS values stay byte-equal across
     // the refactor and the exploration sequence is preserved.
     double subsetEntropy(int r, int s) const {
+        // r is always in [0, B) (current block of a vertex); s may equal
+        // B when candidatePool returns the fresh-block id. Route every
+        // s-indexed access through the OOB-tolerant accessors so cpp
+        // matches JS Int32Array/Float64Array semantics: `nr_at(s>=B)==0`
+        // skips the s-gated branches; `ers_at(s*B+t)` returns NaN which
+        // propagates into a NaN dS (matches JS `undefined + 1.0`).
         double S = 0.0;
-        if (nr[r] > 0) S += (mode == Mode::DC) ? trace_lgamma(er[r] + 1.0) : er[r] * safelog((double)nr[r]);
-        if (nr[s] > 0) S += (mode == Mode::DC) ? trace_lgamma(er[s] + 1.0) : er[s] * safelog((double)nr[s]);
-        if (nr[r] > 0) {
-            double e_rr_half = ers[(size_t)r * B + r] / 2.0;
+        if (nr_at(r) > 0) S += (mode == Mode::DC) ? trace_lgamma(er_at(r) + 1.0) : er_at(r) * safelog((double)nr_at(r));
+        if (nr_at(s) > 0) S += (mode == Mode::DC) ? trace_lgamma(er_at(s) + 1.0) : er_at(s) * safelog((double)nr_at(s));
+        if (nr_at(r) > 0) {
+            double e_rr_half = ers_at((size_t)r * B + r) / 2.0;
             S -= e_rr_half * LOG2 + trace_lgamma(e_rr_half + 1.0);
         }
-        if (nr[s] > 0 && s != r) {
-            double e_ss_half = ers[(size_t)s * B + s] / 2.0;
+        if (nr_at(s) > 0 && s != r) {
+            double e_ss_half = ers_at((size_t)s * B + s) / 2.0;
             S -= e_ss_half * LOG2 + trace_lgamma(e_ss_half + 1.0);
         }
-        if (r != s) S -= trace_lgamma(ers[(size_t)r * B + s] + 1.0);
+        if (r != s) S -= trace_lgamma(ers_at((size_t)r * B + s) + 1.0);
         std::vector<int> ne = sortedNonEmpty();
         for (size_t i = 0; i < ne.size(); ++i) {
             int t = ne[i];
             if (t == r || t == s) continue;
-            S -= trace_lgamma(ers[(size_t)r * B + t] + 1.0);
-            S -= trace_lgamma(ers[(size_t)s * B + t] + 1.0);
+            S -= trace_lgamma(ers_at((size_t)r * B + t) + 1.0);
+            S -= trace_lgamma(ers_at((size_t)s * B + t) + 1.0);
         }
         return S;
     }
     double partitionDlSubset(int rA, int sA) const {
+        // sA may equal B (fresh-block proposal); nr_at guards.
         double S = lbinom((double)N - 1.0, (double)Bne - 1.0);
-        if (nr[rA] > 0) S -= trace_lgamma((double)nr[rA] + 1.0);
-        if (nr[sA] > 0 && sA != rA) S -= trace_lgamma((double)nr[sA] + 1.0);
+        if (nr_at(rA) > 0) S -= trace_lgamma((double)nr_at(rA) + 1.0);
+        if (nr_at(sA) > 0 && sA != rA) S -= trace_lgamma((double)nr_at(sA) + 1.0);
         return S;
     }
     double edgesDlSubset() const {
@@ -721,9 +782,10 @@ struct BlockState {
         return logChooseRep(NB, E);
     }
     double degreeDlSubset(int rA, int sA) const {
+        // sA may equal B (fresh-block proposal); nr_at + er_at guard.
         double S = 0.0;
-        if (nr[rA] > 0) S += logChooseRep((double)nr[rA], std::round(er[rA]));
-        if (nr[sA] > 0 && sA != rA) S += logChooseRep((double)nr[sA], std::round(er[sA]));
+        if (nr_at(rA) > 0) S += logChooseRep((double)nr_at(rA), std::round(er_at(rA)));
+        if (nr_at(sA) > 0 && sA != rA) S += logChooseRep((double)nr_at(sA), std::round(er_at(sA)));
         return S;
     }
     double ppSubset() const {
@@ -932,6 +994,16 @@ struct JEmit {
     JEmit() { os.setf(std::ios::fmtflags(0), std::ios::floatfield); }
     void writeDouble(double x) {
         // 17 sig digits is round-trip exact for IEEE-754 double.
+        // NaN / +/-Infinity have no native JSON token; emit them as the
+        // string tokens "NaN" / "Infinity" / "-Infinity" so the JS-side
+        // self-RNG harness can round-trip them back to the same IEEE
+        // values via Number(). Default `operator<<` on NaN writes
+        // literal `nan` which is NOT valid JSON. Surfaces in the nested
+        // tracer when candidatePool picks a fresh-block target s == B
+        // (capacity), routing the OOB-tolerant `ers_at` to NaN and
+        // propagating through dS / subsetSE / expArg / expVal.
+        if (std::isnan(x))      { os << "\"NaN\""; return; }
+        if (std::isinf(x))      { os << (x < 0 ? "\"-Infinity\"" : "\"Infinity\""); return; }
         os << std::setprecision(17) << x;
     }
 };

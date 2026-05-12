@@ -407,24 +407,29 @@ std::vector<int> loadInitMembership(const std::string& path,
 }
 
 // ── BlockState ──────────────────────────────────────────────────────
-// Mirrors comdet/js/sbm/block_state.js. Capacity B = N (max possible
-// block count for a flat partition); ers stored row-major B*B with
-// diagonal doubled to match graph-tool's e_rr "each internal edge
-// contributes twice" convention.
+// Mirrors comdet/js/sbm/block_state.js. Initial capacity B = N (max
+// possible flat partition); ers stored row-major B*B with diagonal
+// doubled to match graph-tool's e_rr "each internal edge contributes
+// twice" convention.
 //
-// Latent limit: mcmcSweep can propose a fresh-block id `maxId+1` whose
-// value drifts above N over many sweeps because empty slots aren't
-// recycled (neList tracks live ids but does not renumber). When that
-// happens reads/writes at id `s >= B` are out-of-bounds:
-//   cpp: std::vector OOB = undefined behaviour (heap overflow / crash);
-//   JS:  Int32Array OOB returns undefined → coerces to 0 silently +
-//        OOB writes are dropped (still a bug in absolute Σ but does
-//        not crash). Graph-tool (canonical) avoids the issue via
-//        sparse maps. Surfaces as a `double free / heap overflow`
-//        crash on `nested-ndc fixture32 sweeps>=12`. Documented in
-//        community-detection/sbm/audit.md ("Known latent crash"); not
-//        fixed here so both ports stay structurally faithful to each
-//        other (same B=N design, both have the same root-cause issue).
+// Capacity growth (graph-tool-faithful, post-2026-05-12 revert+redo):
+// mcmcSweep can propose a fresh-block id `maxId+1` after empty slots
+// have been emptied but not recycled (neList tracks live ids without
+// renumbering). When the proposed id reaches or exceeds the current
+// allocation, `addBlock(n=1)` grows `nr / er / ers / neList / neIdx`
+// in place, mirroring graph-tool's `add_block(size_t n=1)`
+// (src/graph/inference/blockmodel/graph_blockmodel.hh:912-933) which
+// resizes _wr, _mrm, _mrp, _bclabel, _brecsum (the canonical equivalent
+// scalars per block) on every fresh-block proposal — see
+// graph_blockmodel.hh:1513 `get_empty_block` calling `add_block()` when
+// `_empty_groups.empty()`.
+//
+// The earlier "OOB-tolerant accessors" approach (commit 976cbd9,
+// reverted) was wrong-direction per the byte-equal-tracer skill rule
+// "Direction matters. Anywhere they diverge, JS gets rewritten, never
+// the canonical-tracer": that patch made cpp tolerate OOB to mirror
+// JS Int32Array/Float64Array undefined-coerce semantics instead of
+// porting graph-tool's canonical add_block growth into both legs.
 enum class Mode { DC, NDC, PP };
 
 struct BlockState {
@@ -460,6 +465,44 @@ struct BlockState {
     inline int blockSize(int r) const { return nr[r]; }
     void nonEmptyBlocks(std::vector<int>& out) const {
         out.assign(neList.begin(), neList.begin() + Bne);
+    }
+
+    // Grow per-block scalars + B*B `ers` matrix by `n` fresh empty
+    // slots. Mirrors graph-tool's `BlockState::add_block(size_t n=1)`
+    // (src/graph/inference/blockmodel/graph_blockmodel.hh:912-933)
+    // which resizes _wr/_mrm/_mrp/_bclabel/_brecsum on every fresh-
+    // block proposal; the cpp tracer's equivalent scalars are
+    // nr (≈_wr/vertex-weight count), er (≈_mrp+_mrm halved into the
+    // undirected sum), neList/neIdx (≈_empty_groups admin). The
+    // canonical also resizes the `_emat` adjacency (line 932); the
+    // cpp tracer's analogue is `ers`, which is a dense `B*B` matrix
+    // and requires a row-by-row copy to preserve existing e_rs values
+    // when B increases.
+    //
+    // Fresh slots are zero-initialised: nr=0, er=0, all new `ers` rows
+    // and columns 0 (an unoccupied block has no edges). neIdx for the
+    // new slot is -1 (not in neList) until a vertex moves there and
+    // moveVertex inserts it. This matches graph-tool's add_block which
+    // inserts the fresh id into _empty_groups but leaves _wr[r]==0
+    // (line 923) until a vertex is actually moved.
+    void addBlock(int n = 1) {
+        const int oldB = B;
+        const int newB = B + n;
+        nr.resize(newB, 0);
+        er.resize(newB, 0.0);
+        neList.resize(newB, -1);
+        neIdx.resize(newB, -1);
+        // Row-by-row copy: new ers is (newB*newB), need to preserve
+        // ers[(size_t)i*oldB + j] -> new_ers[(size_t)i*newB + j] for
+        // i,j in [0,oldB). Trailing row/column entries default-init to 0.
+        std::vector<double> new_ers((size_t)newB * newB, 0.0);
+        for (int i = 0; i < oldB; ++i) {
+            for (int j = 0; j < oldB; ++j) {
+                new_ers[(size_t)i * newB + j] = ers[(size_t)i * oldB + j];
+            }
+        }
+        ers.swap(new_ers);
+        B = newB;
     }
 
     void rebuildFromMembership() {
@@ -770,13 +813,28 @@ struct BlockState {
 };
 
 // ── candidatePool ───────────────────────────────────────────────────
-void candidatePool(const BlockState& st, int v, std::vector<int>& cands) {
+// When the move target `maxId+1` would index past the current B-slot
+// capacity, grow BlockState via `addBlock(1)` first. Mirrors graph-tool
+// `get_empty_block` (src/graph/inference/blockmodel/graph_blockmodel.hh
+// :1513-1528) which calls `add_block()` when `_empty_groups.empty()`.
+// `st` is non-const here because growth is a per-step side effect of
+// the proposal step (canonical does the same; `_empty_groups` is
+// mutated under a non-const _state reference in sample_block /
+// sample_new_group).
+void candidatePool(BlockState& st, int v, std::vector<int>& cands) {
     cands.clear();
     cands.insert(cands.end(), st.neList.begin(), st.neList.begin() + st.Bne);
     if (st.blockSize(st.blockOf(v)) > 1) {
         int maxId = -1;
         for (int i = 0; i < st.Bne; ++i) if (st.neList[i] > maxId) maxId = st.neList[i];
-        cands.push_back(maxId + 1);
+        const int freshId = maxId + 1;
+        // Ensure the fresh-block id is a live slot in nr/er/ers/neIdx.
+        // graph-tool path: `get_empty_block` calls `add_block()` when
+        // `_empty_groups.empty()` (graph_blockmodel.hh:1517-1518).
+        if (freshId >= st.B) {
+            st.addBlock(freshId - st.B + 1);
+        }
+        cands.push_back(freshId);
     }
 }
 

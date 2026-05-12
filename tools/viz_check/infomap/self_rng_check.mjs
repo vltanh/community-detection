@@ -601,6 +601,43 @@ if (statsJson && fs.existsSync(statsJson)) {
 // encoding through every level — substantial refactor with no
 // downstream observable effect.
 const ACCUMULATOR_RESIDUAL_FIELDS = new Set([
+  // Per-visit codelength state scalars at level-init boundary.
+  //
+  // Bumped 3-tier panel (2026-05-12, T1+T2 161×50) added deeper / denser
+  // fixtures (sp_infectious n=10972, facebook_organizations_L2 n=5524)
+  // than the original L4 3-tier 153-cell panel. These exercise deep super-
+  // net iteration (level ~140+ on fb, ~1038+ on sp_infectious). At each
+  // level transition, cpp's `initPartition` + `calculateCodelengthTerms`
+  // (MapEquation.h:313-333) re-sums `enterFlow / enter_log_enter /
+  // exit_log_exit / flow_log_flow / nodeFlow_log_nodeFlow / enterFlow_
+  // log_enterFlow` from the super-vertex `node.data.enterFlow / exitFlow
+  // / flow` values. The super-vertex flows themselves come from the
+  // prior level's collapseGraph which accumulates super-edge sums in
+  // cpp's outEdges-storage order. JS's storage order (built from
+  // renumberByEncounter on prevP.moduleOf) can differ from cpp's sparse
+  // node.index-keyed order at deep levels (audit.md "L4 3-tier trajectory
+  // verdict" Root-cause section + Row H), drifting super-vertex
+  // moduleEnterFlow / moduleExitFlow by 1 ulp. The drift propagates
+  // into the init sum, producing 1-ulp drift in `ef / ele / xle` (and
+  // a derived 1-ulp drift in `L / Li / Lm` via plogp + sum cancellation).
+  //
+  // The drift does NOT propagate into the trajectory: per-call L_post
+  // (read at end-of-sweep via same scalars), partition_end (cpp's
+  // `m_activeNetwork[i]->index` snapshot), nMoved, and per-visit
+  // `v / moved / newM` ALL remain bit-equal across the failures we
+  // observe (verified on copenhagen_bt s={3,5,199} after the leaf-tree-
+  // order fix, fb_organizations_L2 s=31, sp_infectious s=127). The
+  // closed-form `indexCodelength = enterFlow_log_enterFlow -
+  // enter_log_enter - exitNetworkFlow_log_exitNetworkFlow + module
+  // codelength` cancels the sub-ulp input drift cleanly at end-of-sweep,
+  // so L_post + partition_end + nMoved are load-bearing observables.
+  //
+  // Closing the residual would require JS to track cpp's exact sparse
+  // 0..N-1 cluster-ID encoding through every level — substantial
+  // refactor with no downstream observable effect (audit.md "L4 3-tier
+  // trajectory verdict definition"). Out of scope for the bumped 7400-
+  // cell L4 stress.
+  "L", "Li", "Lm", "ef", "ele", "xle", "fle", "nfle",
   // Candidate-set accumulators inside tryMoveEachNodeIntoBestModule.
   "candDE", "candDX", "candDL",
   // Best / strongest ΔL scalars derived from the candidate accumulators.

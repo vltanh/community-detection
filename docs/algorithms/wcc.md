@@ -33,8 +33,10 @@ implementation detail and source-code pointers.
 - Binary: `constrained_clustering MincutOnly` (see
   [`main.cpp:16`](../../constrained-clustering/src/main.cpp#L16):
   `mincut_only.add_description("WCC")`).
-- JS port (planned): `vltanh.github.io/comdet/js/wcc/wcc.js` +
-  shared `mincut.js`. Walker pending the Phase 4c kernel port.
+- JS port: [`comdet/js/wcc/wcc.js`](../../vltanh.github.io/comdet/js/wcc/wcc.js)
+  (kernel) + [`comdet/js/wcc/page.js`](../../vltanh.github.io/comdet/js/wcc/page.js)
+  (walker glue). Mincut backend ports under
+  [`comdet/js/viecut/`](../../vltanh.github.io/comdet/js/viecut/).
 
 ## Entrypoint
 
@@ -194,11 +196,16 @@ Hardcoded to 0; not exposed as a CLI flag.
 
 ## Determinism
 
+WCC itself has no RNG draws of its own. All randomness enters via the
+mincut backend.
+
 | Source | Behaviour |
 | --- | --- |
-| Cactus / NOI mincut | Deterministic given graph + VieCut seed. Seed is hardcoded to 0. |
-| Tie-break among equally balanced cuts | VieCut picks by internal node-id; depends on insertion order, stable given the same input. |
-| Worker thread interleaving | Cluster ids in `com.csv` depend on which thread pops next. Output partition (the partition itself) is stable; cluster id labels are not, under `--num-processors > 1`. Under `--num-processors 1`, two runs on the same input give byte-identical `com.csv`. |
+| WCC kernel | Deterministic given input partition + criterion. No RNG calls in the cut loop or threshold path. |
+| Cactus / NOI mincut | Deterministic given graph + VieCut RNG state. VieCut's `random_functions::m_mt` is a file-static `std::mt19937` ([`VieCut/lib/tools/random_functions.h:26-28`](../../VieCut/lib/tools/random_functions.h#L26)). |
+| VieCut seed | `setSeed(0)` is **commented out** at [`mincut_custom.cpp:37`](../../constrained-clustering/src/mincut_custom.cpp#L37), so the MT state carries over between pops. First call uses the default-construction seed (`5489u` per C++ standard); subsequent calls inherit residual state. The walker exposes a `?seed=N` URL parameter that reseeds VieCut's MT before runWCC enters (see [`page.js:31-35`](../../vltanh.github.io/comdet/js/wcc/page.js#L31)). |
+| Tie-break among minimum cuts | VieCut's `find_most_balanced_cut = true` ([`mincut_custom.cpp:30`](../../constrained-clustering/src/mincut_custom.cpp#L30)) picks the most balanced among tied cuts. Stable given the same RNG state at ComputeMinCut entry. |
+| Worker thread interleaving | Cluster ids in `com.csv` depend on which thread pops next. Output partition (the node set per cluster) is stable; cluster id labels are not, under `--num-processors > 1`. Under `--num-processors 1`, two runs on the same input give byte-identical `com.csv`. |
 
 ## Behaviour on the comdet 32-node fixture
 
@@ -238,4 +245,88 @@ Under the `0.2n^0.5` (sqrt) criterion the threshold drops on small
 clusters (n=12: 0.693; n=8: 0.566; n=4: 0.4). Every cluster passes on
 first mincut: A's cut 1 > 0.693, so no peeling; B, C₁, C₂, D as before.
 The two criteria disagree on A in this fixture and agree on the rest.
+
+## Paper-vs-binary divergences
+
+The Park 2024 / Vu-Le 2026 papers describe WCC at the level of:
+"`mincut(C) > f(|C|)`, split on fail, recurse." The shipping binary
+adds details the papers do not specify:
+
+| Paper position | Binary behaviour |
+| --- | --- |
+| Strict `>` in `mincut > f(n)` | Binary uses `is_close = abs(thr - cut) <= 1e-9; !is_close && thr < cut` at [`constrained.h:431-432`](../../constrained-clustering/includes/constrained.h#L431). The 1e-9 epsilon band is not in the papers. Cuts within 1e-9 of the threshold count as **fail**, not pass. |
+| `f(n) = log_x(n)` per pop | Binary precomputes `pre_computed_log = c / std::log(x)` once at startup ([`constrained.cpp:235`](../../constrained-clustering/src/constrained.cpp#L235)), then evaluates `pre_computed_log * std::log(n)` per pop. Equivalent in arithmetic, but fixes the FP rounding pattern at startup. |
+| Singleton handling unspecified | Binary drops singletons in two places: from the initial CC bucket ([`constrained.h:409`](../../constrained-clustering/includes/constrained.h#L409): `csize > 1`); and from per-pop push-back ([`mincut_only.h:97,110`](../../constrained-clustering/includes/mincut_only.h#L97): `if (in.size > 1)` / `if (out.size > 1)`). |
+| Mincut tie-break unspecified | Binary forces `find_most_balanced_cut = true` ([`mincut_custom.cpp:30`](../../constrained-clustering/src/mincut_custom.cpp#L30)), so the bipartition is the most balanced of the tied minimum cuts. Without this flag, arbitrary tie-break could peel one node at a time and stall the recursion. |
+| Mincut backend unspecified | Binary defaults to VieCut cactus_mincut; `--mincut-type noi` swaps to NOI's algorithm. Both return the same minimum cut value modulo tie-break selection. |
+| Multi-threading unspecified | Binary spawns `num_processors` worker threads when the queue has > 1 entry. Cluster id labels in the output depend on thread pop order; the partition itself is stable. |
+
+## JS-port divergences
+
+The JS port at [`comdet/js/wcc/wcc.js`](../../vltanh.github.io/comdet/js/wcc/wcc.js)
+mirrors the binary's `MincutOnly::main` with one logical worker
+(single-threaded inline drain). Divergences relative to the canonical
+binary:
+
+| Layer | Cpp canonical | JS port |
+| --- | --- | --- |
+| `std::log` vs `Math.log` | glibc libm log | V8 Math.log (fdlibm port via [`tools/viz_check/_common/js_math_port.h`](../../tools/viz_check/_common/js_math_port.h) for the tracer). Differs from libm log by 1 ulp on ~0.65% of inputs. End-to-end byte-equal via the fdlibm port. |
+| `std::uniform_int_distribution<unsigned int>` (chained via VieCut) | libstdc++ uniform_int | JS port mirrors libstdc++ semantics through [`comdet/js/viecut/random.js`](../../vltanh.github.io/comdet/js/viecut/random.js). |
+| MT19937 state | file-static `m_mt` at default-construction seed `5489u` | JS port re-seeds VieCut's MT at every `ComputeMinCut` entry per the harness contract; production walker uses URL `?seed=N`. |
+| Adjacency iteration order in mincut_adapter | igraph `igraph_induced_subgraph_map` canonicalizes adjacency by **other-endpoint-id ASC** (per `type_indexededgelist.c:1816-1822` invariant) | Adapter sorts wgtMap entries by `(hi, lo) ASC` before adding edges (`mincut_adapter.js:75-79`) to mirror cpp's canonical adjacency. |
+| Multi-threading | thread pool when queue > 1 | single-threaded inline drain (semantically equivalent to `--num-processors 1`). |
+| Output cluster ids | FIFO pop order of `done_being_mincut_clusters` | identical: `survivors.forEach((clust, outId) => ...)` at `wcc.js:254`. |
+
+## Audit grid summary
+
+Rows A-M cover the byte-equal-port divergence sources:
+
+| Row | Category | Status |
+| --- | --- | --- |
+| A | RNG byte stream | Delegated to VieCut audit row A. WCC has zero RNG draws of its own. |
+| B | RNG draw count + order | Delegated to VieCut audit row B; per-pop ComputeMinCut entry reseed contract. |
+| C | RNG distribution mapping | Delegated to VieCut audit row C (`uniform_int_distribution`). |
+| D | FP primitives | `std::log` differs from V8 Math.log by 1 ulp on ~0.65% of inputs. Closed via fdlibm `e_log.c` port (`viz_check::jsmath::jsLog`) routed through `JSLOG()` macro under `-DTRACER_MODE`. |
+| E | FP composition | `pre_computed_log * std::log(n)` per pop with precomputed `pre_computed_log = c / log(x)` at startup. Closed via sub-term probes (pre_log_bits, log_n_bits, thr_bits) emitted bit-for-bit on both sides. |
+| F | Short-circuit boundaries | `is_close` epsilon + strict `<` check at constrained.h:431-432 mirrored at wcc.js:104-106. Bit-equal once D + E close. |
+| G | Implicit conversions | `int + int → int` for cluster sizes (overflow-safe), `int → double` exact for n < 2^53. JS uses double throughout; bit-equivalent. |
+| H | Container iteration order | Single shared FIFO queue, in-side then out-side push-back, BFS roots in node-id ASC. Mirrored exactly. |
+| I | Edge cases | Singleton drop at constrained.h:409 + mincut_only.h:48; cluster size 1 short-circuit; cluster equals graph (no inter-cluster edges); mincut = 0 (disconnected). All mirrored. |
+| J | Tie-break rules | (1) threshold-equality is_close → fail; (2) push-back order in-then-out; (3) per-side BFS root order node-id ASC; (4) VieCut most-balanced cut. Mirrored. |
+| K | State-snapshot inheritance | Per-pop induced subgraph rebuilt fresh; no cross-pop state. Mirrored. |
+| L | Per-level encounter-order | N/A: WCC has one logical level (per-pop carve); multi-level recursion sits inside VieCut. |
+| M | Accumulator update order | N/A: no FP accumulators in WCC. Threshold value is one log + one multiply per pop. |
+
+L4 self-RNG byte-equal verification target: ≥ 1M cumulative per-pop
+records across the stress matrix (9 seeds × 12 fixtures × 4 partitions
+× 3 criteria = 1296 cells synth panel, plus the 17-fixture × 9-seed ×
+2-partitioner bumped 3-tier panel). Current status: 1296/1296 PASS on
+the synth panel, 4,827,200 records, 0 mismatches; 3-tier panel running
+to closure. End-to-end byte-equal under matched seed.
+
+## Chain composition
+
+WCC sits downstream of a base clustering algorithm in the chained
+verification harness. The stress matrix wires WCC against four base
+algorithms (matching the VieCut chain set so the cross-algorithm
+coverage is parity-equivalent):
+
+| Base | Source |
+| --- | --- |
+| Leiden-Mod | `ModularityVertexPartition` from libleidenalg; see [`docs/algorithms/leiden.md`](./leiden.md). |
+| Leiden-CPM(0.5) | `CPMVertexPartition` at resolution 0.5. |
+| Infomap | v2.9.2 multi-level Louvain on the map equation; see [`docs/algorithms/infomap.md`](./infomap.md). |
+| SBM-Flat-PP | graph-tool's `minimize_blockmodel_dl` with planted-partition prior; see [`docs/algorithms/sbm.md`](./sbm.md). |
+
+For each (base, fixture, seed) triple, the base produces a partition;
+WCC post-processes it; the survivor set is recorded in the audit grid.
+The 17-fixture bumped 3-tier panel (T1+T2+T3, n ranging 800-23k)
+exercises all four chains under matching seeds.
+
+## Cross-references
+
+- Sibling post-procs: [`cc.md`](./cc.md), [`cm.md`](./cm.md).
+- Mincut backend: [`viecut.md`](./viecut.md).
+- Base clustering bases (chained pipeline): [`leiden.md`](./leiden.md),
+  [`infomap.md`](./infomap.md), [`sbm.md`](./sbm.md).
 
